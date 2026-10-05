@@ -1,0 +1,54 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev     # never run two applies against the same state
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.13.x"
+
+jobs:
+  deploy-dev:
+    # Only deploy commits on main whose CI passed (or a manual run).
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment: dev       # GitHub environment: add required reviewers here for approvals
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: make build
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - name: terraform init
+        working-directory: infra/envs/dev
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
+      - name: terraform plan
+        working-directory: infra/envs/dev
+        run: terraform plan -input=false -out=tfplan
+      - name: terraform apply
+        working-directory: infra/envs/dev
+        run: terraform apply -input=false tfplan
+      - name: Smoke test
+        run: make smoke ENV=dev
