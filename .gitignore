@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+backend.hcl
+# Lock files belong to root stacks, not reusable modules
+infra/modules/**/.terraform.lock.hcl

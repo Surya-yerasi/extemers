@@ -1,0 +1,3 @@
+# Copy to backend.hcl (gitignored) or pass via -backend-config in CI.
+bucket = "extemers-tfstate-<ACCOUNT_ID>"
+region = "us-east-1"
