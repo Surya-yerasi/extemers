@@ -1,11 +1,12 @@
 # Single entry point for developers and CI. `make help` lists targets.
-# Service-specific targets (lint, test, build, run) live with each service under services/.
 ENV ?= dev
 TF_DIR := infra/envs/$(ENV)
 TF ?= terraform
+DOCQA := services/docqa
 
 .DEFAULT_GOAL := help
 .PHONY: help install tf-fmt tf-validate tf-init tf-plan tf-apply tf-destroy \
+        docqa-install docqa-check docqa-build docqa-run docqa-dev \
         audit-tags nuke-orphans docs-diagrams clean
 
 help: ## Show targets
@@ -26,14 +27,37 @@ tf-validate: ## Validate every stack and module without a backend
 tf-init: ## terraform init (needs infra/envs/$(ENV)/backend.hcl)
 	$(TF) -chdir=$(TF_DIR) init -input=false -backend-config=backend.hcl
 
-tf-plan: ## Plan ENV (default dev)
-	$(TF) -chdir=$(TF_DIR) plan -input=false -out=tfplan
+tf-plan: ## Plan ENV; needs IMAGE_TAG=<git sha already in ECR>
+	$(TF) -chdir=$(TF_DIR) plan -input=false -out=tfplan -var image_tag=$(IMAGE_TAG)
 
 tf-apply: ## Apply the saved plan
 	$(TF) -chdir=$(TF_DIR) apply -input=false tfplan
 
-tf-destroy: ## Tear down ENV
-	$(TF) -chdir=$(TF_DIR) destroy
+tf-destroy: ## Tear down ENV (the docs bucket and KMS key are protected by prevent_destroy)
+	$(TF) -chdir=$(TF_DIR) destroy -var image_tag=$(IMAGE_TAG)
+
+# ---------------------------------------------------------------- docqa
+
+docqa-install: ## Install docqa dependencies
+	cd $(DOCQA) && uv sync --frozen
+
+docqa-check: ## docqa: ruff, mypy --strict, pytest with coverage gate
+	cd $(DOCQA) && uv run ruff check . && uv run ruff format --check . && \
+	  uv run mypy src tests && uv run pytest --cov --cov-report=term-missing
+
+docqa-build: ## Build the docqa arm64 image as docqa:local
+	docker buildx build --platform linux/arm64 --provenance=false --sbom=false \
+	  -t docqa:local --load $(DOCQA)
+
+docqa-run: docqa-build ## Run the image on :8080 against the deployed dev config (uses your AWS login)
+	@mkdir -p build && aws configure export-credentials --format env-no-export > build/.aws-env
+	docker run --rm -p 8080:8080 --env-file build/.aws-env -e AWS_REGION=us-east-1 \
+	  -e DOCQA_ENVIRONMENT=local -e DOCQA_CONFIG_PARAMETER=/docqa/dev/config docqa:local; \
+	  rm -f build/.aws-env
+
+docqa-dev: ## Run docqa with auto-reload (no container) against the deployed dev config
+	cd $(DOCQA) && DOCQA_CONFIG_PARAMETER=/docqa/dev/config AWS_REGION=us-east-1 \
+	  uv run uvicorn docqa.web.app:create_app --factory --reload --port 8080
 
 audit-tags: ## List everything tagged project=extemers (independent of TF state)
 	./scripts/audit_tags.sh

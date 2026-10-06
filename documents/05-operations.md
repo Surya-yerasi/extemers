@@ -93,7 +93,7 @@ excluded from `project` so tag sweeps can never delete the state bucket or CI ro
 | 3 | Plan role can write and delete state objects | A malicious PR workflow could tamper with state | Grant only `s3:GetObject`/`ListBucket` (plans already run `-lock=false`) |
 | 4 | Bootstrap state is a local file | If lost, bootstrap must be re-imported | Migrate it to the S3 bucket |
 | 5 | One environment in one account | Every change lands in the only environment | Add `envs/prod` in a separate account with required reviewers |
-| 6 | The dev state key is still `calculator/dev/terraform.tfstate` | Misleading name | Changed to `dev/terraform.tfstate` in the first docqa PR (the old state is empty after the removal) |
+| 6 | Lambda concurrency quota is 10 (new-account default) | No per-function reserved-concurrency cap is possible | Request an increase in Service Quotas (free) if a cap is wanted |
 
 ## Incident log
 
@@ -103,4 +103,5 @@ excluded from `project` so tag sweeps can never delete the state bucket or CI ro
 | 2026-10-05 | `nuke_orphans.sh` built the wrong API ID from stage ARNs | Would have silently skipped deleting APIs | Fixed the `sed` pattern |
 | 2026-10-05 | PR #1 CI jobs stuck "queued", then "not acquired by Runner of type hosted" | CI could not run | GitHub Actions outage; re-ran after resolution |
 | 2026-10-05 | `Terraform plan (dev)`: "Not authorized to perform sts:AssumeRoleWithWebIdentity" | No PR plans; deploys would also have failed | Repo uses the immutable OIDC subject format; added `github_subject_prefix` and re-applied bootstrap ([ADR P-07](03-architecture-decisions.md#p-07-immutable-oidc-subject)) |
+| 2026-10-06 | Dev state key renamed `calculator/dev/terraform.tfstate` → `dev/terraform.tfstate` | None (the old state was empty after the removal) | Old object to delete once docqa Phase 1 is applied |
 | 2026-10-06 | Calculator service retired | None (by design) | Removed through the pipeline: PR plan `0 to add, 0 to change, 11 to destroy` ([ADR P-09](03-architecture-decisions.md#p-09-removals-go-through-the-pipeline)) |

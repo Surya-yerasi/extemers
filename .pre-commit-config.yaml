@@ -17,6 +17,24 @@ repos:
 
   - repo: local
     hooks:
+      - id: docqa-ruff
+        name: docqa ruff
+        entry: uv run --directory services/docqa ruff check --fix
+        language: system
+        files: ^services/docqa/.*\.py$
+        pass_filenames: false
+      - id: docqa-ruff-format
+        name: docqa ruff format
+        entry: uv run --directory services/docqa ruff format
+        language: system
+        files: ^services/docqa/.*\.py$
+        pass_filenames: false
+      - id: docqa-mypy
+        name: docqa mypy
+        entry: uv run --directory services/docqa mypy src tests
+        language: system
+        files: ^services/docqa/.*\.py$
+        pass_filenames: false
       - id: terraform-fmt
         name: terraform fmt
         entry: terraform fmt -recursive infra

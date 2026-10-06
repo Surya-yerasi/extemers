@@ -1,0 +1,12 @@
+flowchart LR
+    user([You · browser]) -- HTTPS --> url[Lambda Function URL<br/>auth NONE · app enforces login]
+    url --> fn["docqa-dev-web<br/>container image · arm64 · 512 MB<br/>FastAPI + Lambda Web Adapter"]
+    fn -- cold start: read config --> ssm[(SSM /docqa/dev/config<br/>String: IDs + URLs)]
+    fn -- verify tokens --> cog[Cognito user pool docqa-dev<br/>Lite tier · admin-created users · TOTP MFA]
+    user -- hosted login --> cog
+    ecr[(ECR docqa-dev<br/>immutable SHA tags · scan on push)] -. image .-> fn
+    fn --> logs[(CloudWatch /aws/lambda/docqa-dev-web<br/>KMS · 7 days)]
+    bucket[(S3 docqa-dev-ACCOUNT<br/>SSE-KMS · versioned · TLS-only<br/>prevent_destroy)]
+    kms{{KMS alias/docqa<br/>from bootstrap}} -.-> bucket
+    kms -.-> logs
+    budget[AWS Budget docqa-dev-account-monthly<br/>$10/month · alerts at $5 actual, $10 forecast]

@@ -13,6 +13,6 @@ output "deploy_role_arn" {
 }
 
 output "docqa_kms_key_arn" {
-  description = "Pass to infra/envs/dev as var.docqa_kms_key_arn."
+  description = "For reference only: infra/envs/dev looks the key up by alias (alias/docqa)."
   value       = aws_kms_key.docqa.arn
 }

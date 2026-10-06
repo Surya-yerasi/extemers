@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant W as docqa-dev-web (Function URL → Lambda Web Adapter → FastAPI)
+    participant C as Cognito hosted login
+    participant K as Cognito JWKS (public keys)
+
+    B->>W: GET /
+    W-->>B: 303 → /login (no session cookie)
+    B->>W: GET /login
+    W->>W: state + PKCE verifier/challenge
+    W-->>B: 303 → Cognito /oauth2/authorize (challenge, state)<br/>Set-Cookie docqa_oauth=state.verifier (HttpOnly, 10 min)
+    B->>C: sign in: email + password + TOTP
+    C-->>B: 302 → /callback?code&state
+    B->>W: GET /callback (with docqa_oauth cookie)
+    W->>W: state matches cookie?
+    W->>C: POST /oauth2/token (code + PKCE verifier, no client secret)
+    C-->>W: id_token (RS256 JWT)
+    W->>K: fetch signing keys (cached)
+    W->>W: verify signature, iss, aud, exp, token_use=id
+    W-->>B: 303 → / · Set-Cookie docqa_session=id_token (HttpOnly, Secure, SameSite=Lax)
+    B->>W: GET / (session cookie)
+    W->>W: re-verify id_token on every request
+    W-->>B: 200 page
