@@ -30,6 +30,7 @@ and run `make docs-diagrams` (Docker) to regenerate.
 | [07-docqa-phase1](diagrams/07-docqa-phase1.png) | docqa Phase 1 resources |
 | [08-docqa-ingestion](diagrams/08-docqa-ingestion.png) | docqa ingestion pipeline |
 | [09-docqa-ask](diagrams/09-docqa-ask.png) | docqa question answering: strategies, fusion, rerank, cited answer |
+| [10-docqa-evals](diagrams/10-docqa-evals.png) | docqa evaluation harness: corpus, golden set, metrics, CI gate |
 
 ## History
 

@@ -9,7 +9,7 @@ DOCQA := services/docqa
         docqa-install docqa-check docqa-build docqa-run docqa-dev \
         docqa-samples docqa-upload-samples docqa-ingest docqa-stats docqa-ask \
         docqa-local-models docqa-local-samples docqa-local-ingest docqa-local-stats \
-        docqa-local-ask docqa-local-dev \
+        docqa-local-ask docqa-local-dev docqa-local-eval docqa-eval \
         audit-tags nuke-orphans docs-diagrams clean
 
 help: ## Show targets
@@ -105,6 +105,21 @@ docqa-local-ask: ## Local mode: make docqa-local-ask Q="What was my GPA?" [STRAT
 docqa-local-dev: ## Local mode: the web app on :8080 (real Cognito login, local models and index)
 	cd $(DOCQA) && $(LOCAL) DOCQA_CONFIG_PARAMETER=/docqa/dev/config AWS_REGION=us-east-1 \
 	  uv run uvicorn docqa.web.app:create_app --factory --reload --reload-dir src --port 8080
+
+# Eval options: STRATEGIES=dense,bm25  LIMIT=10  RETRIEVAL_ONLY=1  JUDGE=local
+EVAL_ARGS = $(if $(STRATEGIES),--strategies $(STRATEGIES)) $(if $(LIMIT),--limit $(LIMIT)) \
+            $(if $(RETRIEVAL_ONLY),--retrieval-only) $(if $(JUDGE),--judge $(JUDGE)) \
+            $(if $(DATASET),--dataset $(DATASET))
+
+# Local default skips hybrid_rerank: with no local reranker it repeats hybrid's prompts, and
+# Ollama's prompt cache would make it look faster than it is.
+docqa-local-eval: ## Local mode: golden set through the strategies; report under .data/evals/
+	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli eval \
+	  $(EVAL_ARGS) $(if $(STRATEGIES),,--strategies dense,bm25,hybrid)
+
+docqa-eval: ## Bedrock: golden set against the deployed index (costs cents); report under .data/evals/
+	cd $(DOCQA) && DOCQA_DOCS_BUCKET=$(DOCQA_BUCKET) AWS_REGION=us-east-1 \
+	  uv run python -m docqa.cli eval $(EVAL_ARGS)
 
 audit-tags: ## List everything tagged project=extemers (independent of TF state)
 	./scripts/audit_tags.sh
