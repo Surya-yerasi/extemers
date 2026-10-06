@@ -29,7 +29,7 @@ variable "deploy_environment" {
 variable "managed_name_prefixes" {
   description = "Name prefixes of resources the deploy role may manage. Add one per new service."
   type        = list(string)
-  default     = ["calculator-"]
+  default     = ["docqa-"]
 }
 
 variable "create_oidc_provider" {

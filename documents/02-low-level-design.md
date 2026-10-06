@@ -29,7 +29,7 @@ extemers/
 | `region` | `us-east-1` | |
 | `github_subject_prefix` | `repo:Surya-yerasi@61959369/extemers@1405205156` | Prefix of the OIDC `sub` claim. GitHub's immutable subject format, validated to start with `repo:` |
 | `deploy_environment` | `dev` | GitHub environment whose jobs may assume the deploy role |
-| `managed_name_prefixes` | `["calculator-"]` → becomes `["docqa-"]` | Name prefixes the deploy role may manage |
+| `managed_name_prefixes` | `["docqa-"]` | Name prefixes the deploy role may manage |
 | `create_oidc_provider` | `true` | Set `false` if the account already has the GitHub provider |
 
 **Resources**
@@ -42,22 +42,31 @@ extemers/
 | `aws_iam_role.plan` (`extemers-github-plan`) | Trust: `sub = <prefix>:pull_request`. AWS `ReadOnlyAccess` + state bucket access |
 | `aws_iam_role.deploy` (`extemers-github-deploy`) | Trust: `sub = <prefix>:environment:dev`. Permissions below |
 
-**Deploy role permissions** (scoped by `managed_name_prefixes`):
+**Deploy role permissions** (scoped by `managed_name_prefixes`, currently `["docqa-"]`):
 
 | Statement | Actions | Resources |
 |---|---|---|
 | State | `s3:ListBucket`, `Get/Put/DeleteObject` | The state bucket |
-| `Lambda` | `lambda:*` | `function:<prefix>*` |
-| `LambdaExecutionRoles` | Create, update, delete and tag roles; inline policies | `role/<prefix>*` |
-| `PassRoleToLambdaOnly` | `iam:PassRole` with `iam:PassedToService = lambda.amazonaws.com` | `role/<prefix>*` |
-| `ApiGateway` | `GET/POST/PUT/PATCH/DELETE`, tag/untag | `/apis`, `/apis/*`, `/tags/*` in the region |
-| `LogGroups` | `logs:*` | `/aws/lambda/<prefix>*`, `/aws/apigateway/<prefix>*` |
-| `LogsAccountLevel` | Describe/list and log-delivery actions | `*` (these actions do not support resource scoping) |
+| `Lambda` | `lambda:*` | `function:docqa-*` |
+| `LambdaExecutionRoles` | Create, update, delete and tag roles; inline policies | `role/docqa-*` |
+| `PassRoleToLambdaOnly` | `iam:PassRole` with `iam:PassedToService = lambda.amazonaws.com` | `role/docqa-*` |
+| `LogGroups` / `LogsAccountLevel` | `logs:*` / describe and list tags | `/aws/lambda/docqa-*` / `*` |
+| `EcrRepositories` / `EcrLogin` | `ecr:*` / `ecr:GetAuthorizationToken` | `repository/docqa-*` / `*` (account-level action) |
+| `BucketConfiguration` | Create/delete bucket, `GetBucket*`/`PutBucket*`, encryption, lifecycle | `arn:aws:s3:::docqa-*` |
+| `DenyDocumentObjects` | **Deny** `Get/Put/DeleteObject*`, `RestoreObject` | `arn:aws:s3:::docqa-*/*`. CI configures the bucket but can never read your documents |
+| `UseServiceKms` | `kms:DescribeKey` | The docqa KMS key |
+| `Cognito` / `CognitoAccountLevel` | `cognito-idp:*` / create and list pools | `userpool/*` in the region (pool IDs are generated, so they cannot be name-scoped) / `*` |
+| `SsmParameters` / `SsmDescribe` | `ssm:*` / `ssm:DescribeParameters` | `parameter/docqa/*` / `*` |
+| `Budgets` | `budgets:*` | `budget/docqa-*` |
 
-The permission set is revised per service. docqa will add ECR, S3 (its docs bucket), Cognito, SSM
-and Budgets, and drop API Gateway.
+API Gateway and log-delivery permissions were removed with the calculator.
 
-**Outputs:** `state_bucket`, `plan_role_arn`, `deploy_role_arn`.
+**docqa KMS key** (`kms.tf`, alias `alias/docqa`): rotation on, 30-day deletion window,
+`prevent_destroy`. The key policy gives the account root administration, so IAM policies grant use,
+and lets CloudWatch Logs encrypt only `/aws/lambda/docqa-*` log groups. It lives in bootstrap so CI
+can use it but never schedule its deletion.
+
+**Outputs:** `state_bucket`, `plan_role_arn`, `deploy_role_arn`, `docqa_kms_key_arn`.
 
 ## `infra/envs/dev`
 
