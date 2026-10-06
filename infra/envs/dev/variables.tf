@@ -14,7 +14,7 @@ variable "image_tag" {
 }
 
 variable "alert_emails" {
-  description = "Budget alert recipients."
-  type        = list(string)
-  default     = []
+  description = "Budget alert recipients, comma-separated (e.g. \"a@example.com,b@example.com\"). Empty = no alerts."
+  type        = string
+  default     = ""
 }

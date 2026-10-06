@@ -103,5 +103,6 @@ excluded from `project` so tag sweeps can never delete the state bucket or CI ro
 | 2026-10-05 | `nuke_orphans.sh` built the wrong API ID from stage ARNs | Would have silently skipped deleting APIs | Fixed the `sed` pattern |
 | 2026-10-05 | PR #1 CI jobs stuck "queued", then "not acquired by Runner of type hosted" | CI could not run | GitHub Actions outage; re-ran after resolution |
 | 2026-10-05 | `Terraform plan (dev)`: "Not authorized to perform sts:AssumeRoleWithWebIdentity" | No PR plans; deploys would also have failed | Repo uses the immutable OIDC subject format; added `github_subject_prefix` and re-applied bootstrap ([ADR P-07](03-architecture-decisions.md#p-07-immutable-oidc-subject)) |
+| 2026-10-06 | First docqa deploy failed at `terraform init`: "Invalid character" in `var.alert_emails` | Nothing created | The variable expected an HCL list but a plain email was entered; it now takes a comma-separated string |
 | 2026-10-06 | Dev state key renamed `calculator/dev/terraform.tfstate` → `dev/terraform.tfstate` | None (the old state was empty after the removal) | Old object to delete once docqa Phase 1 is applied |
 | 2026-10-06 | Calculator service retired | None (by design) | Removed through the pipeline: PR plan `0 to add, 0 to change, 11 to destroy` ([ADR P-09](03-architecture-decisions.md#p-09-removals-go-through-the-pipeline)) |

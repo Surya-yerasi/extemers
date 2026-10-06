@@ -87,8 +87,8 @@ aws cognito-idp admin-create-user --user-pool-id "$POOL" \
 Cognito emails you a temporary password. At first sign-in you choose a new password and scan a
 QR code with an authenticator app (TOTP).
 
-**Budget alerts:** add a repository variable `ALERT_EMAILS` holding a JSON list, e.g.
-`["you@example.com"]`. Until it is set, the budget exists but sends no email.
+**Budget alerts:** add a repository variable `ALERT_EMAILS` with one or more addresses,
+comma-separated (e.g. `you@example.com`). Until it is set, the budget exists but sends no email.
 
 **Run locally:**
 

@@ -82,7 +82,7 @@ It is configured through the bootstrap variable `github_subject_prefix` ([ADR P-
 | `AWS_PLAN_ROLE_ARN` | Variable | Repository | `plan_role_arn` |
 | `AWS_DEPLOY_ROLE_ARN` | Variable | Environment `dev` | `deploy_role_arn` |
 | `AWS_REGION` | Variable | Repository (optional) | `us-east-1` |
-| `ALERT_EMAILS` | Variable | Repository (optional) | JSON list for budget alerts, e.g. `["you@example.com"]` |
+| `ALERT_EMAILS` | Variable | Repository (optional) | Budget alert recipients, comma-separated, e.g. `you@example.com` |
 
 ## Recommended branch protection for `main`
 

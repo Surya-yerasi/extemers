@@ -22,7 +22,7 @@ jobs:
     env:
       IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
       TF_VAR_image_tag: ${{ github.event.workflow_run.head_sha || github.sha }}
-      TF_VAR_alert_emails: ${{ vars.ALERT_EMAILS || '[]' }}
+      TF_VAR_alert_emails: ${{ vars.ALERT_EMAILS }}
     # Only deploy commits on main whose CI passed (or a manual run).
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest

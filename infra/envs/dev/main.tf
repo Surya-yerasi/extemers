@@ -91,5 +91,5 @@ module "docqa_budget" {
   name              = "${local.docqa_name}-account-monthly"
   monthly_limit_usd = 10
   actual_alert_usd  = 5
-  alert_emails      = var.alert_emails
+  alert_emails      = compact([for e in split(",", var.alert_emails) : trimspace(e)])
 }
