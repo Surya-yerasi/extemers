@@ -1,0 +1,13 @@
+flowchart TB
+    dt["provider default_tags (infra/envs/dev)<br/>project=extemers · env=dev · owner<br/>managed_by=terraform · repository"]
+    app["module-level tag<br/>app=&lt;service&gt;"]
+    dt --> res[Every taggable resource in a service stack]
+    app --> res
+
+    res --> tagapi[Resource Groups Tagging API]
+    tagapi --> audit[make audit-tags<br/>list]
+    tagapi --> nuke[scripts/nuke_orphans.sh<br/>dry-run · --yes deletes]
+    res --> billing[Cost allocation tags<br/>Cost Explorer by project / app / env]
+
+    boot["infra/bootstrap<br/>app=extemers-bootstrap<br/>(no project tag: never swept)"]
+    boot -. excluded .- tagapi

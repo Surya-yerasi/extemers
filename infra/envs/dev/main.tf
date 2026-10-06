@@ -1,14 +1,2 @@
-module "calculator" {
-  source = "../../modules/lambda_http_api"
-
-  name         = "calculator-dev"
-  package_path = var.package_path
-  handler      = "calculator.handler.lambda_handler"
-  routes       = ["POST /calculate", "GET /health"]
-
-  environment_variables = {
-    APP_ENVIRONMENT         = "dev"
-    POWERTOOLS_SERVICE_NAME = "calculator"
-    POWERTOOLS_LOG_LEVEL    = "INFO"
-  }
-}
+# dev environment root. Service modules are added here as they are built
+# (next: docqa). Removing a module block destroys its resources on the next apply.

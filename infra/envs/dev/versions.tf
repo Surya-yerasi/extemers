@@ -22,8 +22,7 @@ provider "aws" {
 
   default_tags {
     tags = {
-      project    = "extemers" # umbrella tag: safe to delete everything carrying this
-      app        = "calculator"
+      project    = "extemers" # umbrella tag: safe to delete everything carrying this; modules add `app`
       env        = "dev"
       owner      = var.owner
       managed_by = "terraform"

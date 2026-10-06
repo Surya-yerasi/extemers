@@ -1,0 +1,18 @@
+sequenceDiagram
+    autonumber
+    participant J as GitHub Actions job
+    participant T as GitHub OIDC provider
+    participant STS as AWS STS
+    participant R as IAM role trust policy
+
+    J->>T: request ID token (permissions: id-token: write)
+    T-->>J: JWT  aud=sts.amazonaws.com<br/>sub=repo:Surya-yerasi@61959369/extemers@1405205156:environment:dev
+    J->>STS: AssumeRoleWithWebIdentity(role ARN, JWT)
+    STS->>R: verify issuer, aud, sub conditions
+    alt sub matches (PR → plan role, env dev → deploy role)
+        R-->>STS: allow
+        STS-->>J: temporary credentials (≤ 1 h)
+    else any other branch / fork / environment
+        R-->>STS: deny
+        STS-->>J: AccessDenied
+    end

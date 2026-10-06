@@ -1,0 +1,19 @@
+flowchart LR
+    dev([Developer]) -- git push / PR --> gh[GitHub repo<br/>Surya-yerasi/extemers]
+    gh -- triggers --> gha[GitHub Actions<br/>ci.yml / deploy.yml]
+    gha -- "OIDC token → sts:AssumeRoleWithWebIdentity" --> iam[IAM roles<br/>extemers-github-plan<br/>extemers-github-deploy]
+    gha -- terraform plan / apply --> aws
+    admin([Admin, once]) -- "terraform apply (local state)" --> boot
+
+    subgraph aws[AWS account · us-east-1]
+        direction TB
+        subgraph boot[infra/bootstrap]
+            s3[(S3 state bucket<br/>extemers-tfstate-*)]
+            oidc[GitHub OIDC provider]
+        end
+        subgraph envs[infra/envs/dev]
+            svc[Service stacks<br/>added per service, e.g. docqa]
+        end
+    end
+    iam -.-> envs
+    envs -. state .-> s3

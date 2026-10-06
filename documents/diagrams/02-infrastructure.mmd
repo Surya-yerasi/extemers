@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph bootstrap["infra/bootstrap · local state · applied by a human, once per account"]
+        s3[(aws_s3_bucket<br/>extemers-tfstate-ACCOUNT<br/>prevent_destroy)]
+        s3v[versioning · SSE-AES256<br/>public-access-block · TLS-only policy]
+        oidc[aws_iam_openid_connect_provider<br/>token.actions.githubusercontent.com]
+        rplan[aws_iam_role extemers-github-plan<br/>sub = PREFIX:pull_request<br/>ReadOnlyAccess + state access]
+        rdeploy[aws_iam_role extemers-github-deploy<br/>sub = PREFIX:environment:dev<br/>scoped to managed_name_prefixes]
+        s3 --- s3v
+        oidc --> rplan
+        oidc --> rdeploy
+    end
+
+    subgraph dev["infra/envs/dev · S3 backend · native lock file"]
+        tags[provider default_tags<br/>project · env · owner · managed_by · repository]
+        mods[service modules<br/>none yet · next: docqa]
+        tags -.-> mods
+    end
+
+    s3 -. stores state for .-> dev
+    rdeploy -. applies .-> dev
+    rplan -. plans .-> dev
