@@ -91,7 +91,7 @@ jobs:
         working-directory: infra/envs/dev
         env:
           TF_VAR_image_tag: ${{ github.event.pull_request.head.sha }}
-          TF_VAR_alert_emails: ${{ vars.ALERT_EMAILS || '[]' }}
+          TF_VAR_alert_emails: ${{ vars.ALERT_EMAILS }}
         run: terraform plan -input=false -no-color -lock=false | tee plan.txt
       - name: Comment plan on PR
         uses: actions/github-script@v7
