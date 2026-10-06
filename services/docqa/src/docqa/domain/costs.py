@@ -6,6 +6,9 @@ and are flagged so the estimate is never silently wrong.
 
 from pydantic import BaseModel
 
+# Models served on the laptop (local mode, Ollama) are free.
+LOCAL_MODEL_PREFIX = "local/"
+
 # USD per 1,000 tokens: (input, output). Keys are model IDs without the "us." profile prefix.
 TOKEN_PRICES: dict[str, tuple[float, float]] = {
     "amazon.nova-micro-v1:0": (0.000035, 0.00014),
@@ -34,6 +37,8 @@ def _base_model(model_id: str) -> str:
 
 
 def token_cost(model_id: str, input_tokens: int, output_tokens: int = 0) -> CostEstimate:
+    if model_id.startswith(LOCAL_MODEL_PREFIX):
+        return CostEstimate()
     price = TOKEN_PRICES.get(_base_model(model_id))
     if price is None:
         return CostEstimate(unpriced_models=[model_id])
@@ -41,6 +46,8 @@ def token_cost(model_id: str, input_tokens: int, output_tokens: int = 0) -> Cost
 
 
 def rerank_cost(model_id: str) -> CostEstimate:
+    if model_id.startswith(LOCAL_MODEL_PREFIX):
+        return CostEstimate()
     price = RERANK_PRICES.get(model_id)
     if price is None:
         return CostEstimate(unpriced_models=[model_id])

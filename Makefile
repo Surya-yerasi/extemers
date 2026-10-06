@@ -8,6 +8,8 @@ DOCQA := services/docqa
 .PHONY: help install tf-fmt tf-validate tf-init tf-plan tf-apply tf-destroy \
         docqa-install docqa-check docqa-build docqa-run docqa-dev \
         docqa-samples docqa-upload-samples docqa-ingest docqa-stats docqa-ask \
+        docqa-local-models docqa-local-samples docqa-local-ingest docqa-local-stats \
+        docqa-local-ask docqa-local-dev \
         audit-tags nuke-orphans docs-diagrams clean
 
 help: ## Show targets
@@ -76,6 +78,33 @@ docqa-stats: ## Number of chunks in the index
 docqa-ask: ## Ask from your laptop: make docqa-ask Q="What was my GPA?" [STRATEGY=dense|bm25|hybrid|hybrid_rerank]
 	cd $(DOCQA) && DOCQA_DOCS_BUCKET=$(DOCQA_BUCKET) AWS_REGION=us-east-1 \
 	  uv run python -m docqa.cli ask "$(Q)" --strategy $(or $(STRATEGY),hybrid)
+
+# ---------------------------------------------------------------- docqa local mode
+# Ollama models, files and index under services/docqa/.data/ (git- and docker-ignored). $0.
+LOCAL := DOCQA_PROVIDER=local
+LOCAL_MODELS := qwen2.5:7b bge-m3 qwen2.5vl:7b
+
+docqa-local-models: ## Local mode: check Ollama is running and pull any missing models
+	@curl -fsS http://localhost:11434/api/version >/dev/null || \
+	  { echo "Ollama is not running: brew install ollama && brew services start ollama"; exit 1; }
+	@for m in $(LOCAL_MODELS); do ollama list | grep -qE "^$$m(:latest)? " || ollama pull $$m; done
+	@ollama list
+
+docqa-local-samples: ## Local mode: copy the synthetic documents into .data/raw/samples/
+	mkdir -p $(DOCQA)/.data/raw/samples && cp $(DOCQA)/samples/synthetic/* $(DOCQA)/.data/raw/samples/
+
+docqa-local-ingest: ## Local mode: ingest .data/raw/ (put your own files there too), or KEYS="raw/a.pdf"
+	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli ingest $(KEYS)
+
+docqa-local-stats: ## Local mode: number of chunks in the local index
+	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli stats
+
+docqa-local-ask: ## Local mode: make docqa-local-ask Q="What was my GPA?" [STRATEGY=...]
+	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli ask "$(Q)" --strategy $(or $(STRATEGY),hybrid)
+
+docqa-local-dev: ## Local mode: the web app on :8080 (real Cognito login, local models and index)
+	cd $(DOCQA) && $(LOCAL) DOCQA_CONFIG_PARAMETER=/docqa/dev/config AWS_REGION=us-east-1 \
+	  uv run uvicorn docqa.web.app:create_app --factory --reload --reload-dir src --port 8080
 
 audit-tags: ## List everything tagged project=extemers (independent of TF state)
 	./scripts/audit_tags.sh

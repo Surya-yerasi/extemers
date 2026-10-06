@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from docqa.config import AppConfig, QASettings, get_config
 from docqa.domain.retrieval import Strategy
 from docqa.pipelines.qa import MAX_QUESTION_CHARS, AskResult, QAService
+from docqa.ports import ModelUnavailableError
 from docqa.web.auth import (
     OAUTH_COOKIE,
     OAUTH_COOKIE_MAX_AGE,
@@ -219,6 +220,11 @@ def ask(body: AskRequest, request: Request, user: CurrentUser) -> AskResult:
         result = qa.ask(body.question, body.strategy)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except ModelUnavailableError as exc:  # local mode: Ollama not running or model not pulled
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("ask_model_http_error", extra={"error": type(exc).__name__})
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "model service error") from exc
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "Unknown")
         logger.warning("ask_upstream_error", extra={"error_code": code, "user_sub": user.sub})
