@@ -1,16 +1,19 @@
-"""Backfill and maintenance from a laptop (uses your AWS credentials).
+"""Backfill, maintenance and ad-hoc questions from a laptop (uses your AWS credentials).
 
 uv run python -m docqa.cli ingest            # every document under raw/
 uv run python -m docqa.cli ingest raw/a.pdf  # one document
 uv run python -m docqa.cli stats
+uv run python -m docqa.cli ask "What was my GPA?" --strategy hybrid_rerank
 """
 
 import argparse
+import json
 import sys
 
-from docqa.config import IngestSettings
+from docqa.config import IngestSettings, QASettings
+from docqa.domain.retrieval import Strategy
 from docqa.pipelines.ingest import RAW_PREFIX
-from docqa.pipelines.wiring import build_ingest_service
+from docqa.pipelines.wiring import build_ingest_service, build_qa_service
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -19,9 +22,21 @@ def main(argv: list[str] | None = None) -> int:
     ingest = sub.add_parser("ingest", help="parse, chunk, embed and index documents")
     ingest.add_argument("keys", nargs="*", help="S3 keys under raw/ (default: all)")
     sub.add_parser("stats", help="show index size")
+    ask = sub.add_parser("ask", help="answer a question (prints JSON)")
+    ask.add_argument("question")
+    ask.add_argument(
+        "--strategy", choices=[s.value for s in Strategy], default=Strategy.HYBRID.value
+    )
     args = parser.parse_args(argv)
 
     settings = IngestSettings()
+
+    if args.command == "ask":
+        qa = build_qa_service(QASettings(), settings.docs_bucket)
+        answer = qa.ask(args.question, Strategy(args.strategy))
+        print(json.dumps(answer.model_dump(mode="json"), indent=2))
+        return 0
+
     service = build_ingest_service(settings)
 
     if args.command == "stats":

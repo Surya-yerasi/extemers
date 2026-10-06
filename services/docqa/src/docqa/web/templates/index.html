@@ -4,13 +4,55 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>docqa</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <header>
+    <span class="brand">docqa</span>
+    <span class="who">{{ email }} · {{ environment }} · <a href="/logout">Sign out</a></span>
+  </header>
+
   <main>
-    <h1>docqa</h1>
-    <p>Signed in as <strong>{{ email }}</strong> ({{ environment }}).</p>
-    <p>Document questions arrive in Phase 3.</p>
-    <p><a href="/logout">Sign out</a></p>
+    <form id="ask-form">
+      <label for="question">Ask about your documents</label>
+      <textarea id="question" name="question" rows="3" maxlength="{{ max_chars }}" required
+                placeholder="e.g. What was my cumulative GPA?"></textarea>
+      <div class="row">
+        <label for="strategy" class="inline">Retrieval</label>
+        <select id="strategy" name="strategy">
+          {% for value, label in strategies.items() %}
+          <option value="{{ value }}" {% if value == default_strategy %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" id="ask-button">Ask</button>
+      </div>
+    </form>
+
+    <p id="status" role="status" aria-live="polite"></p>
+
+    <section id="result" hidden>
+      <div id="answer" class="answer"></div>
+      <ol id="citations" class="citations"></ol>
+
+      <details id="debug">
+        <summary>Debug: retrieval, timings, cost</summary>
+        <div class="metrics">
+          <div><h3>Timings (ms)</h3><dl id="timings"></dl></div>
+          <div><h3>Tokens</h3><dl id="tokens"></dl></div>
+          <div><h3>Cost</h3><dl id="cost"></dl></div>
+          <div><h3>Models</h3><dl id="models"></dl></div>
+        </div>
+        <h3>Chunks given to the model</h3>
+        <div class="table-wrap">
+          <table id="chunks">
+            <thead><tr><th>#</th><th>Source</th><th>Ranks</th><th>Scores</th><th>Text</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
+    </section>
   </main>
 </body>
 </html>

@@ -1,0 +1,25 @@
+flowchart TB
+    user([Browser: signed-in user]) -- "POST /api/ask<br/>{question, strategy}<br/>session cookie (ID token)" --> web["docqa-dev-web<br/>FastAPI · 1 GB · 60 s<br/>verify ID token (JWKS)"]
+    web --> strat{strategy}
+
+    strat -- "dense" --> emb1
+    strat -- "bm25" --> bm1
+    strat -- "hybrid / hybrid_rerank" --> emb1 & bm1
+
+    emb1["embed question<br/>Titan V2 · 1024 dims"] --> dense["vector search (cosine, exact) · top 20<br/>LanceDB on S3, read-only"]
+    bm1["BM25 full-text search · top 20<br/>LanceDB on S3, read-only"]
+
+    dense --> rrf["Reciprocal rank fusion<br/>score = Σ 1/(60 + rank)"]
+    bm1 --> rrf
+    rrf -- hybrid --> top
+    rrf -- hybrid_rerank --> rerank["Cohere Rerank 3.5<br/>cross-encoder · top 5"]
+    rerank --> top
+    dense -- dense --> top
+    bm1 -- bm25 --> top
+
+    top["top 5 chunks<br/>numbered sources [1]…[5]"] --> empty{any chunks?}
+    empty -- no --> nf["'I couldn't find that'<br/>no model call, $0"]
+    empty -- yes --> gen["Nova Micro (Converse)<br/>answer only from sources · cite [n]<br/>or NOT_FOUND · maxTokens 600"]
+    gen --> parse["map [n] → chunk, page, file<br/>timings · tokens · $ estimate"]
+    parse --> resp([JSON → page: answer, citations, debug panel])
+    nf --> resp

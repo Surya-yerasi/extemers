@@ -84,3 +84,7 @@ jobs:
           curl -fsS --retry 5 --retry-all-errors --retry-delay 3 "${URL}health"
           code=$(curl -s -o /dev/null -w '%{http_code}' "${URL}api/me")
           test "$code" = "401" || { echo "expected 401 from /api/me without login, got $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d '{"question":"smoke"}' "${URL}api/ask")
+          test "$code" = "401" || { echo "expected 401 from /api/ask without login, got $code"; exit 1; }
+          curl -fsS -o /dev/null "${URL}static/app.js"

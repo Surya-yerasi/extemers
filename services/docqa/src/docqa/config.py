@@ -59,21 +59,39 @@ def get_config() -> AppConfig:
     return load_config(Settings())
 
 
-class IngestSettings(BaseSettings):
-    """Ingestion and index settings. Model IDs are cross-region inference profiles."""
+class IndexSettings(BaseSettings):
+    """Which index variant to use. Shared by ingestion (writes) and Q&A (reads)."""
 
     model_config = SettingsConfigDict(env_prefix="DOCQA_")
 
-    docs_bucket: str
     lancedb_uri: str | None = None  # default: s3://<docs_bucket>/lancedb
     index_table: str = "chunks__struct400__titan1024"
-    vision_model_id: str = "us.amazon.nova-2-lite-v1:0"
-    metadata_model_id: str = "us.amazon.nova-micro-v1:0"
     embedding_model_id: str = "amazon.titan-embed-text-v2:0"
     embedding_dimensions: int = 1024
+
+    def lancedb_uri_for(self, bucket: str) -> str:
+        return self.lancedb_uri or f"s3://{bucket}/lancedb"
+
+
+class IngestSettings(IndexSettings):
+    """Ingestion settings. Model IDs are cross-region inference profiles."""
+
+    docs_bucket: str
+    vision_model_id: str = "us.amazon.nova-2-lite-v1:0"
+    metadata_model_id: str = "us.amazon.nova-micro-v1:0"
     chunk_max_tokens: int = 400
     chunk_overlap_tokens: int = 60
 
     @property
     def resolved_lancedb_uri(self) -> str:
-        return self.lancedb_uri or f"s3://{self.docs_bucket}/lancedb"
+        return self.lancedb_uri_for(self.docs_bucket)
+
+
+class QASettings(IndexSettings):
+    """Question answering: retrieval depth, models, limits."""
+
+    generation_model_id: str = "us.amazon.nova-micro-v1:0"
+    rerank_model_id: str = "cohere.rerank-v3-5:0"
+    candidates: int = 20  # per retriever, before fusion/rerank
+    top_k: int = 5  # chunks given to the model
+    max_answer_tokens: int = 600
