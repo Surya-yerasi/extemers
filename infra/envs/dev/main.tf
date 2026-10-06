@@ -3,15 +3,17 @@
 data "aws_caller_identity" "current" {}
 
 # Created in infra/bootstrap; looked up by alias so nothing is copied between stacks.
-data "aws_kms_alias" "docqa" {
-  name = "alias/docqa"
+# aws_kms_key (DescribeKey) rather than aws_kms_alias (ListAliases): DescribeKey is
+# authorised against the key itself, which the deploy role is already scoped to.
+data "aws_kms_key" "docqa" {
+  key_id = "alias/docqa"
 }
 
 locals {
   docqa_name         = "docqa-dev"
   docqa_config_param = "/docqa/dev/config"
   account_id         = data.aws_caller_identity.current.account_id
-  kms_key_arn        = data.aws_kms_alias.docqa.target_key_arn
+  kms_key_arn        = data.aws_kms_key.docqa.arn
   local_base_url     = "http://localhost:8080/" # `make docqa-run` (local container)
   docqa_callback_urls = [
     "${module.docqa_web.function_url}callback",
