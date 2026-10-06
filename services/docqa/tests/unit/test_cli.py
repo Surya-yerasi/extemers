@@ -1,8 +1,19 @@
+import json
+
 import pytest
 
 from docqa import cli
 from docqa.pipelines.ingest import IngestResult, Outcome
-from tests.fakes import MemoryBlobStore, MemoryIndex
+from docqa.pipelines.qa import QAService
+from tests.fakes import (
+    FakeEmbedder,
+    FakeGenerator,
+    FakeReranker,
+    FakeSearcher,
+    MemoryBlobStore,
+    MemoryIndex,
+    retrieved,
+)
 
 
 class StubService:
@@ -48,3 +59,27 @@ def test_stats(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[st
     use(monkeypatch, StubService())
     assert cli.main(["stats"]) == 0
     assert "chunks__struct400__titan1024: 0 chunks" in capsys.readouterr().out
+
+
+def test_ask_prints_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    qa = QAService(
+        searcher=FakeSearcher(bm25=[retrieved("a")]),
+        embedder=FakeEmbedder(),
+        embedding_model_id="e",
+        generator=FakeGenerator("GPA [1]"),
+        reranker=FakeReranker(),
+    )
+    buckets: list[str] = []
+
+    def build(_settings: object, bucket: str) -> QAService:
+        buckets.append(bucket)
+        return qa
+
+    monkeypatch.setattr(cli, "build_qa_service", build)
+    assert cli.main(["ask", "gpa?", "--strategy", "bm25"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["answer"] == "GPA [1]"
+    assert out["strategy"] == "bm25"
+    assert buckets == ["bucket"]

@@ -43,6 +43,8 @@ module "docqa_web" {
   image_uri            = "${module.docqa_ecr.repository_url}:${var.image_tag}"
   kms_key_arn          = local.kms_key_arn
   function_url_enabled = true
+  memory_size          = 1024 # LanceDB search + pyarrow; more memory also means more CPU
+  timeout              = 60   # embed + search + rerank + generate, with cold start headroom
 
   environment_variables = {
     DOCQA_ENVIRONMENT            = "dev"
@@ -55,11 +57,50 @@ module "docqa_web" {
   additional_policy_json = data.aws_iam_policy_document.docqa_web.json
 }
 
+# The web function answers questions: read-only on the index, no access to raw/ or parsed/.
 data "aws_iam_policy_document" "docqa_web" {
   statement {
     sid       = "ReadOwnConfig"
     actions   = ["ssm:GetParameter"]
     resources = ["arn:aws:ssm:${var.region}:${local.account_id}:parameter${local.docqa_config_param}"]
+  }
+
+  statement {
+    sid       = "ReadIndex"
+    actions   = ["s3:GetObject"]
+    resources = ["${module.docqa_bucket.bucket_arn}/lancedb/*"]
+  }
+
+  statement {
+    sid       = "ListIndex"
+    actions   = ["s3:ListBucket"]
+    resources = [module.docqa_bucket.bucket_arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["lancedb/*", "lancedb"]
+    }
+  }
+
+  statement {
+    sid       = "DecryptIndex"
+    actions   = ["kms:Decrypt"]
+    resources = [local.kms_key_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.region}.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid     = "InvokeModels"
+    actions = ["bedrock:InvokeModel"]
+    resources = concat(
+      [for p in local.web_bedrock_profiles : "arn:aws:bedrock:${var.region}:${local.account_id}:inference-profile/${p}"],
+      [for p in local.web_bedrock_profiles : "arn:aws:bedrock:*::foundation-model/${trimprefix(p, "us.")}"],
+      [for m in local.web_bedrock_models : "arn:aws:bedrock:${var.region}::foundation-model/${m}"],
+    )
   }
 }
 
@@ -91,7 +132,9 @@ module "docqa_ingest" {
 }
 
 locals {
-  bedrock_profiles = ["us.amazon.nova-2-lite-v1:0", "us.amazon.nova-micro-v1:0"]
+  bedrock_profiles     = ["us.amazon.nova-2-lite-v1:0", "us.amazon.nova-micro-v1:0"]
+  web_bedrock_profiles = ["us.amazon.nova-micro-v1:0"] # answer generation
+  web_bedrock_models   = ["amazon.titan-embed-text-v2:0", "cohere.rerank-v3-5:0"]
 }
 
 data "aws_iam_policy_document" "docqa_ingest" {

@@ -29,6 +29,7 @@ and run `make docs-diagrams` (Docker) to regenerate.
 | [06-docqa-login](diagrams/06-docqa-login.png) | docqa sign-in: Cognito code + PKCE, token verification |
 | [07-docqa-phase1](diagrams/07-docqa-phase1.png) | docqa Phase 1 resources |
 | [08-docqa-ingestion](diagrams/08-docqa-ingestion.png) | docqa ingestion pipeline |
+| [09-docqa-ask](diagrams/09-docqa-ask.png) | docqa question answering: strategies, fusion, rerank, cited answer |
 
 ## History
 

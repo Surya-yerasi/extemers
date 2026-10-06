@@ -1,4 +1,5 @@
-"""Bedrock adapters: vision transcription, metadata extraction, Titan embeddings.
+"""Bedrock adapters: vision transcription, metadata extraction, Titan embeddings,
+answer generation and reranking.
 
 Every call sets maxTokens explicitly (an unset value reserves the model maximum against the
 quota) and uses adaptive retries for throttling.
@@ -13,6 +14,8 @@ import boto3
 from botocore.config import Config
 
 from docqa.domain.models import DocMetadata
+from docqa.domain.retrieval import RetrievedChunk, ranked
+from docqa.ports import Generation
 
 RETRY_CONFIG = Config(retries={"max_attempts": 5, "mode": "adaptive"}, read_timeout=120)
 
@@ -126,3 +129,66 @@ class TitanEmbedder:
             )
             vectors.append(json.loads(response["body"].read())["embedding"])
         return vectors
+
+
+class BedrockGenerator:
+    """Answer generation through the Converse API (any Bedrock text model)."""
+
+    def __init__(self, model_id: str, client: Any = None) -> None:
+        self.model_id = model_id
+        self._client = client or bedrock_runtime()
+
+    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+        response = self._client.converse(
+            modelId=self.model_id,
+            system=[{"text": system}],
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": max_tokens, "temperature": 0},
+        )
+        usage = response.get("usage", {})
+        return Generation(
+            text=_first_text(response).strip(),
+            input_tokens=int(usage.get("inputTokens", 0)),
+            output_tokens=int(usage.get("outputTokens", 0)),
+        )
+
+
+class CohereReranker:
+    """Cohere Rerank 3.5 on Bedrock (InvokeModel). A cross-encoder: reads the query and
+    each chunk together, so it is slower and more accurate than embedding similarity."""
+
+    def __init__(self, model_id: str, client: Any = None) -> None:
+        self.model_id = model_id
+        self._client = client or bedrock_runtime()
+
+    def rerank(
+        self, query: str, chunks: Sequence[RetrievedChunk], top_n: int
+    ) -> list[RetrievedChunk]:
+        if not chunks:
+            return []
+        response = self._client.invoke_model(
+            modelId=self.model_id,
+            body=json.dumps(
+                {
+                    "query": query,
+                    "documents": [c.text for c in chunks],
+                    "top_n": min(top_n, len(chunks)),
+                    "api_version": 2,
+                }
+            ),
+        )
+        results = json.loads(response["body"].read())["results"]
+        return ranked(
+            [
+                chunks[r["index"]].model_copy(
+                    update={
+                        "scores": {
+                            **chunks[r["index"]].scores,
+                            "rerank": round(float(r["relevance_score"]), 6),
+                        }
+                    }
+                )
+                for r in results
+            ],
+            "rerank",
+        )

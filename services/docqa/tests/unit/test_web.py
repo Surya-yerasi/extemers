@@ -2,10 +2,17 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
-from docqa.web.auth import OAUTH_COOKIE, SESSION_COOKIE
+from docqa.config import AppConfig
+from docqa.pipelines.qa import QAService
+from docqa.ports import Generation
+from docqa.web.app import create_app
+from docqa.web.auth import OAUTH_COOKIE, SESSION_COOKIE, TokenVerifier
 from tests.conftest import CLIENT_ID, DOMAIN
+from tests.fakes import FakeEmbedder, FakeGenerator, FakeReranker, FakeSearcher, retrieved
 
 
 def start_login(client: TestClient) -> str:
@@ -123,3 +130,146 @@ def test_logout_clears_session_and_redirects_to_cognito(
     assert response.headers["location"].startswith(f"{DOMAIN}/logout?")
     assert SESSION_COOKIE in response.headers["set-cookie"]
     assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+@pytest.fixture
+def qa_client(
+    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
+) -> tuple[TestClient, FakeGenerator]:
+    generator = FakeGenerator("GPA 3.86 [1].")
+    qa = QAService(
+        searcher=FakeSearcher(dense=[retrieved("a")], bm25=[retrieved("a")]),
+        embedder=FakeEmbedder(),
+        embedding_model_id="amazon.titan-embed-text-v2:0",
+        generator=generator,
+        reranker=FakeReranker(),
+    )
+    client = TestClient(create_app(config, verifier, qa=qa), follow_redirects=False)
+    client.cookies.set(SESSION_COOKIE, make_token())
+    return client, generator
+
+
+def test_ask_requires_login(client: TestClient) -> None:
+    response = client.post("/api/ask", json={"question": "gpa?"})
+    assert response.status_code == 401
+
+
+def test_ask_returns_answer_citations_and_debug(
+    qa_client: tuple[TestClient, FakeGenerator],
+) -> None:
+    client, _ = qa_client
+    response = client.post("/api/ask", json={"question": "gpa?", "strategy": "dense"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "GPA 3.86 [1]."
+    assert body["strategy"] == "dense"
+    assert body["citations"][0]["chunk_id"] == "a"
+    assert body["chunks"][0]["scores"] == {"dense": 0.9}
+    assert body["timings_ms"]["total"] >= 0
+    assert body["cost"]["usd"] > 0
+
+
+def test_ask_defaults_to_hybrid(qa_client: tuple[TestClient, FakeGenerator]) -> None:
+    client, _ = qa_client
+    assert client.post("/api/ask", json={"question": "gpa?"}).json()["strategy"] == "hybrid"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"question": ""},
+        {"question": "x" * 1001},
+        {"question": "gpa", "strategy": "magic"},
+        {},
+    ],
+)
+def test_ask_validates_input(
+    qa_client: tuple[TestClient, FakeGenerator], payload: dict[str, Any]
+) -> None:
+    client, generator = qa_client
+    assert client.post("/api/ask", json=payload).status_code == 422
+    assert generator.prompts == []
+
+
+def test_ask_whitespace_question_is_rejected(qa_client: tuple[TestClient, FakeGenerator]) -> None:
+    client, _ = qa_client
+    response = client.post("/api/ask", json={"question": "   "})
+    assert response.status_code == 422
+    assert response.json() == {"detail": "question is empty"}
+
+
+class RaisingGenerator(FakeGenerator):
+    def __init__(self, code: str) -> None:
+        super().__init__()
+        self.code = code
+
+    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+        raise ClientError({"Error": {"Code": self.code, "Message": "no"}}, "Converse")
+
+
+@pytest.mark.parametrize(
+    ("code", "status", "detail"),
+    [
+        ("ThrottlingException", 503, "model quota reached; try again later"),
+        ("AccessDeniedException", 502, "upstream service error"),
+    ],
+)
+def test_ask_maps_bedrock_errors(
+    qa_client: tuple[TestClient, FakeGenerator], code: str, status: int, detail: str
+) -> None:
+    client, _ = qa_client
+    client.app.state.qa._generator = RaisingGenerator(code)  # type: ignore[attr-defined]
+    response = client.post("/api/ask", json={"question": "gpa?"})
+    assert response.status_code == status
+    assert response.json() == {"detail": detail}
+
+
+def test_ask_builds_service_lazily_from_config(
+    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
+) -> None:
+    app = create_app(config, verifier)
+    built: list[str] = []
+    qa = QAService(
+        searcher=FakeSearcher(),
+        embedder=FakeEmbedder(),
+        embedding_model_id="e",
+        generator=FakeGenerator(),
+        reranker=FakeReranker(),
+    )
+
+    def factory(bucket: str) -> QAService:
+        built.append(bucket)
+        return qa
+
+    app.state.qa_factory = factory
+    client = TestClient(app)
+    client.cookies.set(SESSION_COOKIE, make_token())
+    assert client.get("/health").status_code == 200
+    assert built == []  # not built for health checks
+    client.post("/api/ask", json={"question": "q"})
+    client.post("/api/ask", json={"question": "q"})
+    assert built == ["docqa-test-bucket"]  # built once
+
+
+def test_ask_without_bucket_is_unavailable(
+    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
+) -> None:
+    client = TestClient(create_app(config.model_copy(update={"docs_bucket": None}), verifier))
+    client.cookies.set(SESSION_COOKIE, make_token())
+    assert client.post("/api/ask", json={"question": "q"}).status_code == 503
+
+
+def test_index_renders_ask_form(client: TestClient, make_token: Callable[..., str]) -> None:
+    client.cookies.set(SESSION_COOKIE, make_token())
+    page = client.get("/").text
+    assert 'id="ask-form"' in page
+    assert '<option value="hybrid" selected>' in page
+    assert 'value="hybrid_rerank"' in page
+    assert '<script src="/static/app.js"' in page
+
+
+def test_static_assets_are_served(client: TestClient) -> None:
+    response = client.get("/static/app.js")
+    assert response.status_code == 200
+    assert "textContent" in response.text
+    assert "innerHTML" not in response.text.replace("never innerHTML", "")

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from docqa.adapters.lancedb_index import LanceChunkIndex
+from docqa.adapters.lancedb_index import LanceChunkIndex, LanceChunkSearcher
 from docqa.domain.chunking import chunk_document
 from docqa.domain.models import DocMetadata, ExtractionMethod, Page, ParsedDocument
 
@@ -65,3 +65,46 @@ def test_reopen_existing_table(tmp_path: Path) -> None:
     doc = parsed("d1", "x")
     LanceChunkIndex(str(tmp_path), "t", 4).upsert_document(doc, chunk_document(doc), [vec(0)])
     assert LanceChunkIndex(str(tmp_path), "t", 4).count() == 1
+
+
+def test_searcher_returns_ranked_chunks_with_scores(tmp_path: Path) -> None:
+    uri = str(tmp_path / "db")
+    writer = LanceChunkIndex(uri, "t", dimensions=4)
+    for i, (doc_id, text) in enumerate(
+        [("d1", "Cumulative GPA 3.86 in Computer Science"), ("d2", "Scholarship award letter")]
+    ):
+        doc = parsed(doc_id, text)
+        writer.upsert_document(doc, chunk_document(doc), [vec(i)])
+
+    searcher = LanceChunkSearcher(uri, "t")
+    dense = searcher.vector_search(vec(1), limit=2)
+    assert [c.doc_id for c in dense] == ["d2", "d1"]
+    assert dense[0].scores["dense"] == pytest.approx(1.0)
+    assert [c.ranks["dense"] for c in dense] == [1, 2]
+    assert dense[0].source_key == "raw/d2.pdf"
+    assert dense[0].doc_type == "transcript"
+
+    lexical = searcher.text_search("What's my GPA?", limit=5)
+    assert [c.doc_id for c in lexical] == ["d1"]
+    assert lexical[0].scores["bm25"] > 0
+    assert searcher.text_search("   ", limit=5) == []
+
+
+def test_searcher_sees_documents_added_after_it_opened(tmp_path: Path) -> None:
+    uri = str(tmp_path / "db")
+    writer = LanceChunkIndex(uri, "t", dimensions=4)
+    first = parsed("d1", "first document")
+    writer.upsert_document(first, chunk_document(first), [vec(0)])
+    searcher = LanceChunkSearcher(uri, "t")
+    assert len(searcher.vector_search(vec(0), limit=5)) == 1
+
+    second = parsed("d2", "second document")
+    writer.upsert_document(second, chunk_document(second), [vec(1)])
+    assert len(searcher.vector_search(vec(0), limit=5)) == 2
+
+
+def test_searcher_on_missing_table_returns_nothing(tmp_path: Path) -> None:
+    searcher = LanceChunkSearcher(str(tmp_path / "empty"), "t")
+    assert searcher.vector_search(vec(0), limit=5) == []
+    assert searcher.text_search("gpa", limit=5) == []
+    assert not (tmp_path / "empty" / "t.lance").exists()  # read-only: nothing created

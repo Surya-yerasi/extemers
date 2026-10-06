@@ -7,8 +7,8 @@ It is built in phases, and this document grows with each one.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Foundations: registry, document bucket, login, web function, image pipeline, budget | Done |
-| 2 | Ingestion: parse → chunk → embed → LanceDB on S3 | **This PR** (Bedrock calls blocked until the account quota case is resolved) |
-| 3 | Ask page with retrieval strategies and citations | Planned |
+| 2 | Ingestion: parse → chunk → embed → LanceDB on S3 | Deployed (Bedrock calls blocked until the account quota case is resolved) |
+| 3 | Ask page with retrieval strategies and citations | **This PR** |
 | 4 | Evaluation harness (retrieval metrics, RAGAS, latency, cost) | Planned |
 | 5 | Dashboards and alarms | Planned |
 | 6 | Agents (LangGraph), platform comparisons | Planned |
@@ -100,6 +100,68 @@ is lifted, ingestion fails at the first model call (metadata, vision or embeddin
 | `make docqa-ingest` / `make docqa-ingest KEYS="raw/a.pdf"` | Backfill or re-run from your laptop (prints per-document results) |
 | `make docqa-stats` | Chunks in the index |
 | `aws logs tail /aws/lambda/docqa-dev-ingest --follow` | Watch ingestion (logs carry IDs and counts, never document text) |
+
+## Phase 3: asking questions
+
+![docqa ask](diagrams/09-docqa-ask.png)
+
+<sub>Source: [diagrams/09-docqa-ask.mmd](diagrams/09-docqa-ask.mmd)</sub>
+
+The page at `/` has a question box, a **retrieval strategy** dropdown and a collapsible **debug
+panel**. It calls `POST /api/ask` (login required) and renders the JSON result.
+
+| Strategy | What it does | Model calls per question |
+|---|---|---|
+| `dense` | Embed the question (Titan V2), exact cosine search, top 5 | embed + generate |
+| `bm25` | LanceDB full-text (BM25) search, top 5 | generate only |
+| `hybrid` (default) | Dense top 20 + BM25 top 20, fused with **RRF** (k = 60), top 5 | embed + generate |
+| `hybrid_rerank` | Hybrid top 20, re-ordered by **Cohere Rerank 3.5**, top 5 | embed + rerank + generate |
+
+**Answer step:** the top 5 chunks become numbered sources `[1]`–`[5]`. Nova Micro answers from
+them only, cites `[n]`, or replies `NOT_FOUND`. The app maps each `[n]` back to its chunk, file
+and pages; markers outside 1–5 are not treated as citations. If retrieval finds nothing, the
+model is not called at all.
+
+**Debug panel**, per question:
+
+| Field | Meaning |
+|---|---|
+| Timings (ms) | `embed`, `dense_search`, `bm25_search`, `fuse`, `rerank`, `generate`, `total` (measured in the function) |
+| Tokens | Generation input/output (from Bedrock); embedding input (estimated as characters ÷ 4) |
+| Cost | USD estimate from the price table in `domain/costs.py`; models without a price are listed rather than counted as $0 |
+| Chunks | Each chunk's rank and score at every stage (`dense`, `bm25`, `rrf`, `rerank`); cited rows are highlighted |
+
+**Web IAM (least privilege):** read `lancedb/*` only (no `raw/` or `parsed/`), list only that
+prefix, KMS decrypt only via S3, and `bedrock:InvokeModel` on Nova Micro (profile + foundation
+models), Titan V2 and Cohere Rerank 3.5. The function moves to 1 GB and 60 s.
+
+**Errors:** Bedrock throttling returns 503 "model quota reached"; other AWS errors return 502;
+invalid input (empty, over 1,000 characters, unknown strategy) returns 422.
+
+### Phase 3 decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-15 | **Own RRF in `domain/retrieval.py`** | About 20 lines, pure and unit-tested; keeps every stage's rank and score visible for the debug panel and the Phase 4 metrics | LanceDB's built-in hybrid query (hides the per-list ranks; a later comparison) |
+| D-16 | **Exact (flat) vector search** | A few thousand chunks: exact search is fast and has perfect recall, so retrieval quality is not confounded by ANN settings | An IVF/HNSW index now (a Phase 4 experiment) |
+| D-17 | **Separate read-only searcher** | `LanceChunkSearcher` never creates the table, so the web role needs no write access to the index | Reusing the writer class (would need `PutObject`) |
+| D-18 | **Numbered sources + `NOT_FOUND` sentinel** | Citations are checked in code, not trusted; "not found" is a measurable outcome for refusal accuracy in Phase 4 | Free-form citations (file names), JSON output mode |
+| D-19 | **Skip the model when retrieval is empty** | No grounding means no answer; saves a call | Letting the model say "not found" |
+| D-20 | **`retrieve()` separate from `ask()`** | The eval harness can score retrieval (Recall@k, MRR, nDCG) without paying for generation | One combined call |
+| D-21 | **No inline script or style** | The existing CSP (`default-src 'self'`) stays strict; model and document text is only inserted with `textContent` | Relaxing the CSP; a frontend framework |
+| D-22 | **QA service built on first question** | `/health` and login never import LanceDB or call Bedrock, so they stay fast and work even if the index is unavailable | Building at startup |
+
+### Runbook: asking
+
+| Command | What |
+|---|---|
+| Open the Function URL and sign in | The ask page |
+| `make docqa-ask Q="What was my GPA?" STRATEGY=hybrid_rerank` | The same pipeline from your laptop; prints the full JSON (answer, chunks, timings, cost) |
+| `aws logs tail /aws/lambda/docqa-dev-web --follow` | `ask_completed` log lines: strategy, timings, tokens, cost (never the question or answer) |
+
+Until the Bedrock quota case is resolved and the documents are ingested, expect: `bm25` →
+"I couldn't find that in your documents." (no index yet, no model call); `dense`/`hybrid` →
+"model quota reached".
 
 ## Login flow
 

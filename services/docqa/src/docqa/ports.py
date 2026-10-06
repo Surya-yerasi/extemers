@@ -3,7 +3,10 @@
 from collections.abc import Sequence
 from typing import Protocol
 
+from pydantic import BaseModel
+
 from docqa.domain.models import Chunk, DocMetadata, ParsedDocument
+from docqa.domain.retrieval import RetrievedChunk
 
 
 class BlobStore(Protocol):
@@ -36,3 +39,32 @@ class ChunkIndex(Protocol):
     ) -> None: ...
     def delete_document(self, doc_id: str) -> None: ...
     def count(self) -> int: ...
+
+
+class ChunkSearcher(Protocol):
+    """Read-only search over one index table. Results are best-first."""
+
+    def vector_search(self, vector: Sequence[float], limit: int) -> list[RetrievedChunk]: ...
+    def text_search(self, query: str, limit: int) -> list[RetrievedChunk]: ...
+
+
+class Reranker(Protocol):
+    model_id: str
+
+    def rerank(
+        self, query: str, chunks: Sequence[RetrievedChunk], top_n: int
+    ) -> list[RetrievedChunk]:
+        """Return the best top_n chunks, best-first, each with a "rerank" score."""
+        ...
+
+
+class Generation(BaseModel):
+    text: str
+    input_tokens: int
+    output_tokens: int
+
+
+class Generator(Protocol):
+    model_id: str
+
+    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation: ...
