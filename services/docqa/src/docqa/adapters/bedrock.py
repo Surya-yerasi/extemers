@@ -12,7 +12,12 @@ from typing import Any
 import boto3
 from botocore.config import Config
 
-from docqa.domain.extraction import METADATA_PROMPT, TRANSCRIBE_PROMPT, parse_metadata
+from docqa.domain.extraction import (
+    METADATA_PROMPT,
+    TRANSCRIBE_PROMPT,
+    clean_transcription,
+    parse_metadata,
+)
 from docqa.domain.models import DocMetadata
 from docqa.domain.retrieval import RetrievedChunk, ranked
 from docqa.ports import Generation
@@ -51,7 +56,7 @@ class BedrockVisionTranscriber:
             ],
             inferenceConfig={"maxTokens": self._max_tokens, "temperature": 0},
         )
-        return _first_text(response).strip()
+        return clean_transcription(_first_text(response))
 
 
 class BedrockMetadataExtractor:

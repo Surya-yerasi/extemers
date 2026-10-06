@@ -87,7 +87,7 @@ LOCAL_MODELS := qwen2.5:7b bge-m3 qwen2.5vl:7b
 docqa-local-models: ## Local mode: check Ollama is running and pull any missing models
 	@curl -fsS http://localhost:11434/api/version >/dev/null || \
 	  { echo "Ollama is not running: brew install ollama && brew services start ollama"; exit 1; }
-	@for m in $(LOCAL_MODELS); do ollama list | grep -q "^$$m " || ollama pull $$m; done
+	@for m in $(LOCAL_MODELS); do ollama list | grep -qE "^$$m(:latest)? " || ollama pull $$m; done
 	@ollama list
 
 docqa-local-samples: ## Local mode: copy the synthetic documents into .data/raw/samples/

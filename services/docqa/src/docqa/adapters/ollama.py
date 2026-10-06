@@ -11,7 +11,12 @@ from typing import Any
 import httpx
 
 from docqa.domain.costs import LOCAL_MODEL_PREFIX as LOCAL_PREFIX
-from docqa.domain.extraction import METADATA_PROMPT, TRANSCRIBE_PROMPT, parse_metadata
+from docqa.domain.extraction import (
+    METADATA_PROMPT,
+    TRANSCRIBE_PROMPT,
+    clean_transcription,
+    parse_metadata,
+)
 from docqa.domain.models import DocMetadata
 from docqa.domain.retrieval import RetrievedChunk, ranked
 from docqa.ports import Generation, ModelUnavailableError
@@ -114,7 +119,9 @@ class OllamaVisionTranscriber:
             "content": TRANSCRIBE_PROMPT,
             "images": [base64.b64encode(image).decode("ascii")],
         }
-        return _content(self._client.chat(self._model, [message], self._max_tokens))
+        return clean_transcription(
+            _content(self._client.chat(self._model, [message], self._max_tokens))
+        )
 
 
 class OllamaMetadataExtractor:

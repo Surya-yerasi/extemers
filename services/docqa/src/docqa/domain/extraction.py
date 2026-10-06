@@ -20,6 +20,16 @@ Document:
 {text}"""
 
 
+_FENCE = re.compile(r"^```[\w-]*\n(.*?)\n?```$", re.DOTALL)
+
+
+def clean_transcription(raw: str) -> str:
+    """Vision models sometimes wrap the whole page in a ```markdown fence; drop it."""
+    text = raw.strip()
+    match = _FENCE.match(text)
+    return match.group(1).strip() if match else text
+
+
 def parse_metadata(raw: str) -> DocMetadata:
     """Tolerant JSON parsing: models sometimes wrap JSON in prose or code fences."""
     match = re.search(r"\{.*\}", raw, re.DOTALL)
