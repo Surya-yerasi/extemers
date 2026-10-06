@@ -57,3 +57,23 @@ def load_config(
 @lru_cache
 def get_config() -> AppConfig:
     return load_config(Settings())
+
+
+class IngestSettings(BaseSettings):
+    """Ingestion and index settings. Model IDs are cross-region inference profiles."""
+
+    model_config = SettingsConfigDict(env_prefix="DOCQA_")
+
+    docs_bucket: str
+    lancedb_uri: str | None = None  # default: s3://<docs_bucket>/lancedb
+    index_table: str = "chunks__struct400__titan1024"
+    vision_model_id: str = "us.amazon.nova-2-lite-v1:0"
+    metadata_model_id: str = "us.amazon.nova-micro-v1:0"
+    embedding_model_id: str = "amazon.titan-embed-text-v2:0"
+    embedding_dimensions: int = 1024
+    chunk_max_tokens: int = 400
+    chunk_overlap_tokens: int = 60
+
+    @property
+    def resolved_lancedb_uri(self) -> str:
+        return self.lancedb_uri or f"s3://{self.docs_bucket}/lancedb"

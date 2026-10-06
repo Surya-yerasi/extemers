@@ -1,0 +1,128 @@
+"""Bedrock adapters: vision transcription, metadata extraction, Titan embeddings.
+
+Every call sets maxTokens explicitly (an unset value reserves the model maximum against the
+quota) and uses adaptive retries for throttling.
+"""
+
+import json
+import re
+from collections.abc import Sequence
+from typing import Any
+
+import boto3
+from botocore.config import Config
+
+from docqa.domain.models import DocMetadata
+
+RETRY_CONFIG = Config(retries={"max_attempts": 5, "mode": "adaptive"}, read_timeout=120)
+
+TRANSCRIBE_PROMPT = (
+    "Transcribe this document page to Markdown. Reproduce all text exactly, in reading order. "
+    "Render tables as Markdown tables with a header row. Use '#' headings for titles. "
+    "Do not add commentary, summaries or text that is not on the page."
+)
+
+METADATA_PROMPT = """Read the start of this document and return ONLY a JSON object with keys:
+doc_type (one of: transcript, degree_certificate, certificate, letter, id_document, other),
+title, institution, person, date. Use "" when unknown. No other text.
+
+Document:
+{text}"""
+
+
+def bedrock_runtime() -> Any:
+    return boto3.client("bedrock-runtime", config=RETRY_CONFIG)
+
+
+def _first_text(response: dict[str, Any]) -> str:
+    for block in response["output"]["message"]["content"]:
+        if "text" in block:
+            return str(block["text"])
+    return ""
+
+
+class BedrockVisionTranscriber:
+    def __init__(self, model_id: str, client: Any = None, max_tokens: int = 4000) -> None:
+        self._model_id = model_id
+        self._client = client or bedrock_runtime()
+        self._max_tokens = max_tokens
+
+    def transcribe(self, image: bytes, image_format: str) -> str:
+        response = self._client.converse(
+            modelId=self._model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"image": {"format": image_format, "source": {"bytes": image}}},
+                        {"text": TRANSCRIBE_PROMPT},
+                    ],
+                }
+            ],
+            inferenceConfig={"maxTokens": self._max_tokens, "temperature": 0},
+        )
+        return _first_text(response).strip()
+
+
+class BedrockMetadataExtractor:
+    def __init__(self, model_id: str, client: Any = None, max_input_chars: int = 4000) -> None:
+        self._model_id = model_id
+        self._client = client or bedrock_runtime()
+        self._max_input_chars = max_input_chars
+
+    def extract(self, text: str) -> DocMetadata:
+        response = self._client.converse(
+            modelId=self._model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": METADATA_PROMPT.format(text=text[: self._max_input_chars])}
+                    ],
+                }
+            ],
+            inferenceConfig={"maxTokens": 300, "temperature": 0},
+        )
+        return parse_metadata(_first_text(response))
+
+
+def parse_metadata(raw: str) -> DocMetadata:
+    """Tolerant JSON parsing: models sometimes wrap JSON in prose or code fences."""
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return DocMetadata()
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return DocMetadata()
+    if not isinstance(data, dict):
+        return DocMetadata()
+    fields = DocMetadata.model_fields
+    return DocMetadata(**{k: str(v) for k, v in data.items() if k in fields and v is not None})
+
+
+class TitanEmbedder:
+    """Titan Text Embeddings V2: one text per request; 256, 512 or 1024 dimensions."""
+
+    def __init__(self, model_id: str, dimensions: int = 1024, client: Any = None) -> None:
+        if dimensions not in (256, 512, 1024):
+            raise ValueError("Titan V2 supports 256, 512 or 1024 dimensions")
+        self._model_id = model_id
+        self._dimensions = dimensions
+        self._client = client or bedrock_runtime()
+
+    @property
+    def dimensions(self) -> int:
+        return self._dimensions
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in texts:
+            response = self._client.invoke_model(
+                modelId=self._model_id,
+                body=json.dumps(
+                    {"inputText": text, "dimensions": self._dimensions, "normalize": True}
+                ),
+            )
+            vectors.append(json.loads(response["body"].read())["embedding"])
+        return vectors

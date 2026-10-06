@@ -45,6 +45,12 @@ variable "log_retention_days" {
   default = 7
 }
 
+variable "image_command" {
+  description = "Override the image CMD, e.g. to run a different app from the same image."
+  type        = list(string)
+  default     = null
+}
+
 variable "function_url_enabled" {
   description = "Expose a public HTTPS Function URL (auth type NONE; the app must authenticate)."
   type        = bool

@@ -54,6 +54,13 @@ resource "aws_lambda_function" "this" {
   memory_size   = var.memory_size
   timeout       = var.timeout
 
+  dynamic "image_config" {
+    for_each = var.image_command == null ? [] : [1]
+    content {
+      command = var.image_command
+    }
+  }
+
   environment {
     variables = var.environment_variables
   }

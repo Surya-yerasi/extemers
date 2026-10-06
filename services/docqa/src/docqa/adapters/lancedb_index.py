@@ -1,0 +1,96 @@
+"""LanceDB chunk index: vectors + BM25 full-text index in one table, stored on S3 (or disk).
+
+One table per index variant (chunking x embedding), e.g. chunks__struct400__titan1024, so
+experiments never overwrite each other.
+"""
+
+from collections.abc import Sequence
+from typing import Any
+
+import lancedb
+import pyarrow as pa
+from lancedb.index import FTS
+
+from docqa.domain.models import Chunk, ParsedDocument
+
+
+def chunk_schema(dimensions: int) -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("chunk_id", pa.string()),
+            pa.field("doc_id", pa.string()),
+            pa.field("ordinal", pa.int32()),
+            pa.field("text", pa.string()),
+            pa.field("embed_text", pa.string()),
+            pa.field("page_start", pa.int32()),
+            pa.field("page_end", pa.int32()),
+            pa.field("source_key", pa.string()),
+            pa.field("content_hash", pa.string()),
+            pa.field("doc_type", pa.string()),
+            pa.field("title", pa.string()),
+            pa.field("institution", pa.string()),
+            pa.field("person", pa.string()),
+            pa.field("date", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), dimensions)),
+        ]
+    )
+
+
+def _quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+class LanceChunkIndex:
+    def __init__(self, uri: str, table_name: str, dimensions: int) -> None:
+        self._db: Any = lancedb.connect(uri)
+        self._table_name = table_name
+        self._dimensions = dimensions
+        self._table: Any = None
+
+    def _open(self) -> Any:
+        if self._table is None:
+            # exist_ok: open the table if another writer (or an earlier run) created it.
+            self._table = self._db.create_table(
+                self._table_name, schema=chunk_schema(self._dimensions), exist_ok=True
+            )
+        return self._table
+
+    def upsert_document(
+        self, doc: ParsedDocument, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]
+    ) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("one vector per chunk required")
+        table = self._open()
+        table.delete(f"doc_id = {_quote(doc.doc_id)}")
+        meta = doc.metadata
+        rows = [
+            {
+                **chunk.model_dump(exclude={"token_estimate"}),
+                "source_key": doc.source_key,
+                "content_hash": doc.content_hash,
+                "doc_type": meta.doc_type,
+                "title": meta.title,
+                "institution": meta.institution,
+                "person": meta.person,
+                "date": meta.date,
+                "vector": list(vector),
+            }
+            for chunk, vector in zip(chunks, vectors, strict=True)
+        ]
+        if rows:
+            table.add(rows)
+        self._refresh_fts(table)
+
+    def delete_document(self, doc_id: str) -> None:
+        table = self._open()
+        table.delete(f"doc_id = {_quote(doc_id)}")
+        self._refresh_fts(table)
+
+    def count(self) -> int:
+        return int(self._open().count_rows())
+
+    @staticmethod
+    def _refresh_fts(table: Any) -> None:
+        # Rebuilding is cheap at this scale (a few thousand chunks) and keeps BM25 exact.
+        if table.count_rows() > 0:
+            table.create_index("text", config=FTS(), replace=True)

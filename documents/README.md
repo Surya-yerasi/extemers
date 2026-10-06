@@ -28,6 +28,7 @@ and run `make docs-diagrams` (Docker) to regenerate.
 | [05-tagging](diagrams/05-tagging.png) | How tags flow to the cleanup scripts and billing |
 | [06-docqa-login](diagrams/06-docqa-login.png) | docqa sign-in: Cognito code + PKCE, token verification |
 | [07-docqa-phase1](diagrams/07-docqa-phase1.png) | docqa Phase 1 resources |
+| [08-docqa-ingestion](diagrams/08-docqa-ingestion.png) | docqa ingestion pipeline |
 
 ## History
 
