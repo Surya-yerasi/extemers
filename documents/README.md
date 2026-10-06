@@ -12,6 +12,7 @@ The next service is **docqa**, a personal-document Q&A (RAG) app on Bedrock.
 | 3 | [Architecture decisions](03-architecture-decisions.md) | Why each platform choice was made, and what was rejected |
 | 4 | [CI/CD](04-ci-cd.md) | What runs on a PR and on merge, and how GitHub authenticates to AWS |
 | 5 | [Operations](05-operations.md) | First-time setup, adding a service, tagging, cost, teardown, incidents |
+| 6 | [docqa](06-docqa.md) | The document Q&A service: architecture, decisions, login flow, runbook |
 
 ## Diagrams
 
@@ -25,6 +26,8 @@ and run `make docs-diagrams` (Docker) to regenerate.
 | [03-ci-cd](diagrams/03-ci-cd.png) | CI and Deploy workflows, jobs and triggers |
 | [04-oidc-auth](diagrams/04-oidc-auth.png) | How a GitHub job gets temporary AWS credentials |
 | [05-tagging](diagrams/05-tagging.png) | How tags flow to the cleanup scripts and billing |
+| [06-docqa-login](diagrams/06-docqa-login.png) | docqa sign-in: Cognito code + PKCE, token verification |
+| [07-docqa-phase1](diagrams/07-docqa-phase1.png) | docqa Phase 1 resources |
 
 ## History
 

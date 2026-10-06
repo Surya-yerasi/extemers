@@ -19,6 +19,10 @@ env:
 
 jobs:
   deploy-dev:
+    env:
+      IMAGE_TAG: ${{ github.event.workflow_run.head_sha || github.sha }}
+      TF_VAR_image_tag: ${{ github.event.workflow_run.head_sha || github.sha }}
+      TF_VAR_alert_emails: ${{ vars.ALERT_EMAILS || '[]' }}
     # Only deploy commits on main whose CI passed (or a manual run).
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
@@ -41,9 +45,42 @@ jobs:
       - name: terraform init
         working-directory: infra/envs/dev
         run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="region=${{ vars.AWS_REGION || 'us-east-1' }}"
+      # The image must exist before Lambda can reference it, so create the registry first.
+      # A no-op on every run after the first.
+      - name: Ensure ECR repository
+        working-directory: infra/envs/dev
+        run: terraform apply -input=false -auto-approve -target=module.docqa_ecr
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push docqa image (skipped if this SHA is already in ECR)
+        env:
+          REPOSITORY: ${{ steps.ecr.outputs.registry }}/docqa-dev
+        run: |
+          if aws ecr describe-images --repository-name docqa-dev --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Image $IMAGE_TAG already in ECR (tags are immutable); skipping build."
+          else
+            docker buildx build services/docqa \
+              --platform linux/arm64 --provenance=false --sbom=false \
+              --tag "$REPOSITORY:$IMAGE_TAG" --push
+          fi
+
       - name: terraform plan
         working-directory: infra/envs/dev
         run: terraform plan -input=false -out=tfplan
       - name: terraform apply
         working-directory: infra/envs/dev
         run: terraform apply -input=false tfplan
+
+      - name: Smoke test
+        working-directory: infra/envs/dev
+        run: |
+          URL=$(terraform output -raw docqa_url)
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 3 "${URL}health"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${URL}api/me")
+          test "$code" = "401" || { echo "expected 401 from /api/me without login, got $code"; exit 1; }
