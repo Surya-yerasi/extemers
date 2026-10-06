@@ -1,0 +1,11 @@
+flowchart LR
+    gen["scripts/make_synthetic_docs.py<br/>15 documents, deliberate look-alikes<br/>byte-reproducible"] --> corpus[(samples/synthetic/)]
+    corpus --> ingest["ingest<br/>(local: Ollama · deployed: Bedrock)"] --> index[(LanceDB table<br/>per variant)]
+    golden[("evals/golden/synthetic.jsonl<br/>49 questions · expected answer<br/>evidence = document + text")] --> runner
+    index --> runner["runner<br/>strategy-major · warm-up first<br/>errors recorded, never raised"]
+    runner -- "retrieve()" --> ir["retrieval metrics (no model)<br/>hit@k · recall@k · MRR · nDCG@k"]
+    runner -- "ask()" --> ans["answer checks (no model)<br/>correct · refusal · citations"]
+    runner -- "optional --judge" --> ragas["RAGAS judge<br/>faithfulness · relevancy<br/>context precision/recall · correctness"]
+    runner --> perf["latency P50/P95 per stage<br/>tokens · $ estimate"]
+    ir & ans & ragas & perf --> out[(".data/evals/&lt;time&gt;-&lt;provider&gt;/<br/>records.jsonl · summary.json · report.md")]
+    corpus -. "CI: BM25 regression gate<br/>hit@5 ≥ 0.95 · MRR ≥ 0.80" .-> ci([pytest])
