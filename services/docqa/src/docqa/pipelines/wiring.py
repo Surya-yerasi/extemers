@@ -1,4 +1,8 @@
-"""Builds the real services from settings (composition root)."""
+"""Builds the real services from settings (composition root).
+
+The provider setting picks the adapters: Bedrock + S3 when deployed, Ollama + local files in
+local mode. The pipelines themselves do not know which one they run on.
+"""
 
 from docqa.adapters.bedrock import (
     BedrockGenerator,
@@ -9,36 +13,78 @@ from docqa.adapters.bedrock import (
     bedrock_runtime,
 )
 from docqa.adapters.lancedb_index import LanceChunkIndex, LanceChunkSearcher
+from docqa.adapters.local_blobs import LocalBlobStore
+from docqa.adapters.ollama import (
+    OllamaClient,
+    OllamaEmbedder,
+    OllamaGenerator,
+    OllamaMetadataExtractor,
+    OllamaVisionTranscriber,
+    PassthroughReranker,
+)
 from docqa.adapters.s3_blobs import S3BlobStore
-from docqa.config import IngestSettings, QASettings
+from docqa.config import IngestSettings, Provider, QASettings
 from docqa.domain.chunking import ChunkingConfig
 from docqa.pipelines.ingest import IngestService
 from docqa.pipelines.qa import QAService
 
 
 def build_ingest_service(settings: IngestSettings) -> IngestService:
+    index = LanceChunkIndex(
+        settings.resolved_lancedb_uri, settings.index_table, settings.embedding_dimensions
+    )
+    chunking = ChunkingConfig(settings.chunk_max_tokens, settings.chunk_overlap_tokens)
+    if settings.provider is Provider.LOCAL:
+        client = OllamaClient(settings.ollama_url)
+        return IngestService(
+            blobs=LocalBlobStore(settings.local_data_dir),
+            vision=OllamaVisionTranscriber(client, settings.vision_model_id),
+            metadata=OllamaMetadataExtractor(client, settings.metadata_model_id),
+            embedder=OllamaEmbedder(
+                client, settings.embedding_model_id, settings.embedding_dimensions
+            ),
+            index=index,
+            chunking=chunking,
+        )
+    if not settings.docs_bucket:  # IngestSettings already enforces this; narrows the type
+        raise ValueError("DOCQA_DOCS_BUCKET is required with the bedrock provider")
     runtime = bedrock_runtime()
     return IngestService(
         blobs=S3BlobStore(settings.docs_bucket),
         vision=BedrockVisionTranscriber(settings.vision_model_id, runtime),
         metadata=BedrockMetadataExtractor(settings.metadata_model_id, runtime),
         embedder=TitanEmbedder(settings.embedding_model_id, settings.embedding_dimensions, runtime),
-        index=LanceChunkIndex(
-            settings.resolved_lancedb_uri, settings.index_table, settings.embedding_dimensions
-        ),
-        chunking=ChunkingConfig(settings.chunk_max_tokens, settings.chunk_overlap_tokens),
+        index=index,
+        chunking=chunking,
     )
 
 
-def build_qa_service(settings: QASettings, docs_bucket: str) -> QAService:
+def build_qa_service(settings: QASettings, docs_bucket: str | None) -> QAService:
+    searcher = LanceChunkSearcher(settings.lancedb_uri_for(docs_bucket), settings.index_table)
+    limits = {
+        "candidates": settings.candidates,
+        "top_k": settings.top_k,
+        "max_answer_tokens": settings.max_answer_tokens,
+    }
+    if settings.provider is Provider.LOCAL:
+        client = OllamaClient(settings.ollama_url)
+        embedder = OllamaEmbedder(
+            client, settings.embedding_model_id, settings.embedding_dimensions
+        )
+        return QAService(
+            searcher=searcher,
+            embedder=embedder,
+            embedding_model_id=embedder.model_id,
+            generator=OllamaGenerator(client, settings.generation_model_id),
+            reranker=PassthroughReranker(),
+            **limits,
+        )
     runtime = bedrock_runtime()
     return QAService(
-        searcher=LanceChunkSearcher(settings.lancedb_uri_for(docs_bucket), settings.index_table),
+        searcher=searcher,
         embedder=TitanEmbedder(settings.embedding_model_id, settings.embedding_dimensions, runtime),
         embedding_model_id=settings.embedding_model_id,
         generator=BedrockGenerator(settings.generation_model_id, runtime),
         reranker=CohereReranker(settings.rerank_model_id, runtime),
-        candidates=settings.candidates,
-        top_k=settings.top_k,
-        max_answer_tokens=settings.max_answer_tokens,
+        **limits,
     )

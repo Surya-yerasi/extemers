@@ -7,11 +7,13 @@ environment. Locally, the same values can come from DOCQA_* environment variable
 
 import json
 from collections.abc import Callable
+from enum import StrEnum
 from functools import lru_cache
-from typing import Any
+from pathlib import Path
+from typing import Any, Self
 
 import boto3
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -59,28 +61,69 @@ def get_config() -> AppConfig:
     return load_config(Settings())
 
 
+class Provider(StrEnum):
+    BEDROCK = "bedrock"  # deployed: Bedrock models, S3 documents, LanceDB on S3
+    LOCAL = "local"  # laptop: Ollama models, files and LanceDB under local_data_dir, $0
+
+
+# In local mode, model and table fields default to these (an explicit DOCQA_* value wins).
+# The table name differs so a local index never mixes with the Titan one.
+LOCAL_DEFAULTS = {
+    "index_table": "chunks__struct400__bgem3_1024",
+    "embedding_model_id": "bge-m3",
+    "vision_model_id": "qwen2.5vl:7b",
+    "metadata_model_id": "qwen2.5:7b",
+    "generation_model_id": "qwen2.5:7b",
+}
+
+
 class IndexSettings(BaseSettings):
-    """Which index variant to use. Shared by ingestion (writes) and Q&A (reads)."""
+    """Which provider and index variant to use. Shared by ingestion (writes) and Q&A (reads)."""
 
     model_config = SettingsConfigDict(env_prefix="DOCQA_")
 
-    lancedb_uri: str | None = None  # default: s3://<docs_bucket>/lancedb
+    provider: Provider = Provider.BEDROCK
+    ollama_url: str = "http://localhost:11434"
+    local_data_dir: Path = Path(".data")  # local mode: raw/, parsed/ and lancedb/ live here
+    lancedb_uri: str | None = (
+        None  # default: s3://<docs_bucket>/lancedb or <local_data_dir>/lancedb
+    )
     index_table: str = "chunks__struct400__titan1024"
     embedding_model_id: str = "amazon.titan-embed-text-v2:0"
     embedding_dimensions: int = 1024
 
-    def lancedb_uri_for(self, bucket: str) -> str:
-        return self.lancedb_uri or f"s3://{bucket}/lancedb"
+    @model_validator(mode="after")
+    def _apply_local_defaults(self) -> Self:
+        if self.provider is Provider.LOCAL:
+            for name, value in LOCAL_DEFAULTS.items():
+                if name in type(self).model_fields and name not in self.model_fields_set:
+                    setattr(self, name, value)
+        return self
+
+    def lancedb_uri_for(self, bucket: str | None) -> str:
+        if self.lancedb_uri:
+            return self.lancedb_uri
+        if self.provider is Provider.LOCAL:
+            return str(self.local_data_dir / "lancedb")
+        if not bucket:
+            raise ValueError("a documents bucket is required with the bedrock provider")
+        return f"s3://{bucket}/lancedb"
 
 
 class IngestSettings(IndexSettings):
-    """Ingestion settings. Model IDs are cross-region inference profiles."""
+    """Ingestion settings. Bedrock model IDs are cross-region inference profiles."""
 
-    docs_bucket: str
+    docs_bucket: str | None = None  # required with the bedrock provider
     vision_model_id: str = "us.amazon.nova-2-lite-v1:0"
     metadata_model_id: str = "us.amazon.nova-micro-v1:0"
     chunk_max_tokens: int = 400
     chunk_overlap_tokens: int = 60
+
+    @model_validator(mode="after")
+    def _require_bucket_for_bedrock(self) -> Self:
+        if self.provider is Provider.BEDROCK and not self.docs_bucket:
+            raise ValueError("DOCQA_DOCS_BUCKET is required with the bedrock provider")
+        return self
 
     @property
     def resolved_lancedb_uri(self) -> str:

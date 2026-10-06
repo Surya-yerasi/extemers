@@ -23,6 +23,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "boto3-stubs[ssm]>=1.40",
+    "botocore[crt]>=1.43.108",
     "mypy>=1.11",
     "pytest>=8.3",
     "pytest-cov>=5.0",

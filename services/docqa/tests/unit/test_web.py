@@ -2,13 +2,14 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
 from docqa.config import AppConfig
 from docqa.pipelines.qa import QAService
-from docqa.ports import Generation
+from docqa.ports import Generation, ModelUnavailableError
 from docqa.web.app import create_app
 from docqa.web.auth import OAUTH_COOKIE, SESSION_COOKIE, TokenVerifier
 from tests.conftest import CLIENT_ID, DOMAIN
@@ -273,3 +274,37 @@ def test_static_assets_are_served(client: TestClient) -> None:
     assert response.status_code == 200
     assert "textContent" in response.text
     assert "innerHTML" not in response.text.replace("never innerHTML", "")
+
+
+class UnavailableGenerator(FakeGenerator):
+    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+        raise ModelUnavailableError("Ollama model qwen2.5:7b is missing (ollama pull qwen2.5:7b)")
+
+
+class BrokenGenerator(FakeGenerator):
+    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+        raise httpx.ConnectTimeout("slow")
+
+
+@pytest.mark.parametrize(
+    ("generator", "status", "detail"),
+    [
+        (
+            UnavailableGenerator(),
+            503,
+            "Ollama model qwen2.5:7b is missing (ollama pull qwen2.5:7b)",
+        ),
+        (BrokenGenerator(), 502, "model service error"),
+    ],
+)
+def test_ask_maps_local_model_errors(
+    qa_client: tuple[TestClient, FakeGenerator],
+    generator: FakeGenerator,
+    status: int,
+    detail: str,
+) -> None:
+    client, _ = qa_client
+    client.app.state.qa._generator = generator  # type: ignore[attr-defined]
+    response = client.post("/api/ask", json={"question": "gpa?"})
+    assert response.status_code == status
+    assert response.json() == {"detail": detail}

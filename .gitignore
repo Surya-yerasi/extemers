@@ -229,3 +229,6 @@ crash.log
 backend.hcl
 # Lock files belong to root stacks, not reusable modules
 infra/modules/**/.terraform.lock.hcl
+
+# docqa local mode: personal documents, parse cache and index stay on this machine
+services/docqa/.data/

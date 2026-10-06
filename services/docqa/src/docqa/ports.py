@@ -9,6 +9,11 @@ from docqa.domain.models import Chunk, DocMetadata, ParsedDocument
 from docqa.domain.retrieval import RetrievedChunk
 
 
+class ModelUnavailableError(Exception):
+    """A model provider cannot serve the request (not running, model missing). The message
+    is safe to show to the signed-in user."""
+
+
 class BlobStore(Protocol):
     def get(self, key: str) -> bytes: ...
     def put(self, key: str, data: bytes, content_type: str) -> None: ...

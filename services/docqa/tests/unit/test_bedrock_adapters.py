@@ -10,8 +10,8 @@ from docqa.adapters.bedrock import (
     BedrockVisionTranscriber,
     CohereReranker,
     TitanEmbedder,
-    parse_metadata,
 )
+from docqa.domain.extraction import parse_metadata
 from tests.fakes import retrieved
 
 
