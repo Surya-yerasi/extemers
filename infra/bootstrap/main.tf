@@ -152,10 +152,16 @@ locals {
   "arn:aws:lambda:${var.region}:${local.account_id}:function:${p}*"]
   role_arns = [for p in var.managed_name_prefixes :
   "arn:aws:iam::${local.account_id}:role/${p}*"]
-  log_group_arns = flatten([for p in var.managed_name_prefixes : [
-    "arn:aws:logs:${var.region}:${local.account_id}:log-group:/aws/lambda/${p}*",
-    "arn:aws:logs:${var.region}:${local.account_id}:log-group:/aws/apigateway/${p}*",
-  ]])
+  log_group_arns = [for p in var.managed_name_prefixes :
+  "arn:aws:logs:${var.region}:${local.account_id}:log-group:/aws/lambda/${p}*"]
+  ecr_repo_arns = [for p in var.managed_name_prefixes :
+  "arn:aws:ecr:${var.region}:${local.account_id}:repository/${p}*"]
+  bucket_arns        = [for p in var.managed_name_prefixes : "arn:aws:s3:::${p}*"]
+  bucket_object_arns = [for p in var.managed_name_prefixes : "arn:aws:s3:::${p}*/*"]
+  ssm_parameter_arns = [for p in var.managed_name_prefixes :
+  "arn:aws:ssm:${var.region}:${local.account_id}:parameter/${trimsuffix(p, "-")}/*"]
+  budget_arns = [for p in var.managed_name_prefixes :
+  "arn:aws:budgets::${local.account_id}:budget/${p}*"]
 }
 
 data "aws_iam_policy_document" "deploy" {
@@ -190,27 +196,86 @@ data "aws_iam_policy_document" "deploy" {
   }
 
   statement {
-    sid       = "ApiGateway"
-    actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PUT", "apigateway:PATCH", "apigateway:DELETE", "apigateway:TagResource", "apigateway:UntagResource"]
-    resources = ["arn:aws:apigateway:${var.region}::/apis", "arn:aws:apigateway:${var.region}::/apis/*", "arn:aws:apigateway:${var.region}::/tags/*"]
-  }
-
-  statement {
     sid       = "LogGroups"
     actions   = ["logs:*"]
     resources = concat(local.log_group_arns, [for a in local.log_group_arns : "${a}:*"])
   }
 
   statement {
-    sid = "LogsAccountLevel"
-    actions = [
-      "logs:DescribeLogGroups", "logs:ListTagsForResource",
-      # Required by API Gateway access logging:
-      "logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery",
-      "logs:DeleteLogDelivery", "logs:ListLogDeliveries",
-      "logs:PutResourcePolicy", "logs:DescribeResourcePolicies",
-    ]
+    sid       = "LogsAccountLevel"
+    actions   = ["logs:DescribeLogGroups", "logs:ListTagsForResource"]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "EcrRepositories"
+    actions   = ["ecr:*"]
+    resources = local.ecr_repo_arns
+  }
+
+  statement {
+    sid       = "EcrLogin"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"] # account-level action; cannot be scoped
+  }
+
+  # Bucket configuration only. The deny below keeps CI away from the objects (your documents).
+  statement {
+    sid = "BucketConfiguration"
+    actions = [
+      "s3:CreateBucket", "s3:DeleteBucket", "s3:ListBucket", "s3:ListBucketVersions",
+      "s3:GetBucket*", "s3:PutBucket*", "s3:DeleteBucketPolicy",
+      "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration",
+      "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration",
+      "s3:GetAccelerateConfiguration", "s3:GetReplicationConfiguration",
+      "s3:GetAnalyticsConfiguration", "s3:GetInventoryConfiguration", "s3:GetMetricsConfiguration",
+      "s3:GetIntelligentTieringConfiguration", "s3:GetBucketObjectLockConfiguration",
+    ]
+    resources = local.bucket_arns
+  }
+
+  statement {
+    sid       = "DenyDocumentObjects"
+    effect    = "Deny"
+    actions   = ["s3:GetObject*", "s3:PutObject*", "s3:DeleteObject*", "s3:RestoreObject"]
+    resources = local.bucket_object_arns
+  }
+
+  statement {
+    sid       = "UseServiceKms"
+    actions   = ["kms:DescribeKey"]
+    resources = [aws_kms_key.docqa.arn]
+  }
+
+  # Cognito user pools have generated IDs, so they cannot be scoped by name.
+  statement {
+    sid       = "Cognito"
+    actions   = ["cognito-idp:*"]
+    resources = ["arn:aws:cognito-idp:${var.region}:${local.account_id}:userpool/*"]
+  }
+
+  statement {
+    sid       = "CognitoAccountLevel"
+    actions   = ["cognito-idp:CreateUserPool", "cognito-idp:ListUserPools", "cognito-idp:DescribeUserPoolDomain"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "SsmParameters"
+    actions   = ["ssm:*"]
+    resources = local.ssm_parameter_arns
+  }
+
+  statement {
+    sid       = "SsmDescribe"
+    actions   = ["ssm:DescribeParameters"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "Budgets"
+    actions   = ["budgets:*"]
+    resources = local.budget_arns
   }
 }
 
