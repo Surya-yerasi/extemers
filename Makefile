@@ -7,6 +7,7 @@ DOCQA := services/docqa
 .DEFAULT_GOAL := help
 .PHONY: help install tf-fmt tf-validate tf-init tf-plan tf-apply tf-destroy \
         docqa-install docqa-check docqa-build docqa-run docqa-dev \
+        docqa-samples docqa-upload-samples docqa-ingest docqa-stats \
         audit-tags nuke-orphans docs-diagrams clean
 
 help: ## Show targets
@@ -37,6 +38,7 @@ tf-destroy: ## Tear down ENV (the docs bucket and KMS key are protected by preve
 	$(TF) -chdir=$(TF_DIR) destroy -var image_tag=$(IMAGE_TAG)
 
 # ---------------------------------------------------------------- docqa
+DOCQA_BUCKET = docqa-dev-$(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 
 docqa-install: ## Install docqa dependencies
 	cd $(DOCQA) && uv sync --frozen
@@ -58,6 +60,18 @@ docqa-run: docqa-build ## Run the image on :8080 against the deployed dev config
 docqa-dev: ## Run docqa with auto-reload (no container) against the deployed dev config
 	cd $(DOCQA) && DOCQA_CONFIG_PARAMETER=/docqa/dev/config AWS_REGION=us-east-1 \
 	  uv run uvicorn docqa.web.app:create_app --factory --reload --port 8080
+
+docqa-samples: ## Regenerate the synthetic sample documents
+	cd $(DOCQA) && uv run python scripts/make_synthetic_docs.py
+
+docqa-upload-samples: ## Upload the synthetic documents to raw/samples/ (S3 then triggers ingestion)
+	aws s3 cp $(DOCQA)/samples/synthetic/ s3://$(DOCQA_BUCKET)/raw/samples/ --recursive
+
+docqa-ingest: ## Ingest from your laptop: all of raw/, or KEYS="raw/a.pdf raw/b.png"
+	cd $(DOCQA) && DOCQA_DOCS_BUCKET=$(DOCQA_BUCKET) AWS_REGION=us-east-1 uv run python -m docqa.cli ingest $(KEYS)
+
+docqa-stats: ## Number of chunks in the index
+	cd $(DOCQA) && DOCQA_DOCS_BUCKET=$(DOCQA_BUCKET) AWS_REGION=us-east-1 uv run python -m docqa.cli stats
 
 audit-tags: ## List everything tagged project=extemers (independent of TF state)
 	./scripts/audit_tags.sh

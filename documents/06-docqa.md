@@ -6,8 +6,8 @@ It is built in phases, and this document grows with each one.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Foundations: registry, document bucket, login, web function, image pipeline, budget | **This PR** |
-| 2 | Ingestion: parse → chunk → embed → LanceDB on S3 | Next |
+| 1 | Foundations: registry, document bucket, login, web function, image pipeline, budget | Done |
+| 2 | Ingestion: parse → chunk → embed → LanceDB on S3 | **This PR** (Bedrock calls blocked until the account quota case is resolved) |
 | 3 | Ask page with retrieval strategies and citations | Planned |
 | 4 | Evaluation harness (retrieval metrics, RAGAS, latency, cost) | Planned |
 | 5 | Dashboards and alarms | Planned |
@@ -46,6 +46,60 @@ All of them carry `app=docqa`, through a provider alias with its own `default_ta
 | D-06 | **Account-wide budget** | On-demand Bedrock usage is not tagged per app, so a tag-filtered budget would miss the most variable cost | Budget filtered on `app=docqa` |
 | D-07 | **ECR created first in Deploy (`-target`)** | Lambda cannot be created before its image exists; a targeted apply of the registry alone is idempotent and runs before the image push | A second Terraform root just for ECR; manual first push |
 | D-08 | **No reserved concurrency** | The account's Lambda concurrency quota is 10, and AWS requires at least 10 to stay unreserved, so nothing can be reserved. The quota itself caps concurrency at 10 | Raising the quota (free, via Service Quotas) would allow a per-function cap later |
+
+## Phase 2: ingestion
+
+![docqa ingestion](diagrams/08-docqa-ingestion.png)
+
+<sub>Source: [diagrams/08-docqa-ingestion.mmd](diagrams/08-docqa-ingestion.mmd)</sub>
+
+| Stage | Implementation | Notes |
+|---|---|---|
+| Trigger | S3 notification on `raw/` → `docqa-dev-ingest` (async) | Same image as the web app, different CMD (`docqa.ingest_app`). No Function URL. Failed ingests return 5xx; `AWS_LWA_ERROR_STATUS_CODES=500-599` turns that into a failed invocation, so S3 retries once |
+| Identity | `doc_id` = SHA-256 of the object key (16 hex), `content_hash` = SHA-256 of the bytes | Re-uploading to the same key replaces the document; identical bytes reuse the cached parse |
+| Text pages | `pypdf` **layout mode**, then `layout_to_markdown` | Default mode emitted one table cell per line (rows lost). Layout mode keeps rows; lines with ≥ 2 wide gaps become a Markdown table |
+| Scanned pages and images | Page rendered at 144 dpi (`pypdfium2`) → **Nova 2 Lite** Converse with the image → Markdown | A page counts as scanned when it has fewer than 40 characters of text |
+| Metadata | **Nova Micro** returns JSON: `doc_type`, `title`, `institution`, `person`, `date` | Tolerant parsing (code fences, prose, bad JSON → defaults) |
+| Parse cache | `parsed/<doc_id>.json` | Chunking/embedding experiments never pay for vision or metadata again |
+| Chunking | Headings, paragraphs and tables kept whole; packed to ~400 tokens with ~60 tokens of overlap; oversized tables split by row **with the header repeated**; oversized text split on lines and sentences | Pure function, 13 unit tests |
+| Contextual header | `"Transcript · Northfield State University · 2019 · p1"` prepended to `embed_text` only | `text` (shown to users, used by BM25) stays clean |
+| Embeddings | **Titan Text Embeddings V2**, 1024 dims, normalised | 256/512 dims are later experiments |
+| Index | **LanceDB** table `chunks__struct400__titan1024` at `s3://docqa-dev-<account>/lancedb/` | Vectors and a BM25 full-text index in one table; one table per chunking × embedding variant |
+| Deletes | `ObjectRemoved` → remove the document's rows and its parse cache | |
+
+**Ingest IAM (least privilege):** read `raw/*`; read/write/delete `parsed/*` and `lancedb/*`; list only
+those prefixes; KMS decrypt/generate only via S3; `bedrock:InvokeModel` on exactly the Nova 2 Lite and
+Nova Micro inference profiles (plus their foundation models in any region, as cross-region profiles
+require) and Titan V2.
+
+### Phase 2 decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-09 | **Parse once, cache the Markdown in S3** | Vision is the only expensive step; chunking and embedding experiments re-read the cache | Re-parsing per experiment |
+| D-10 | **pypdf layout mode → Markdown tables** | Found with the synthetic transcript: default extraction loses table rows, which breaks "what grade did I get in X?" | Default extraction; Textract (costs money; only needed for scans, which already go to vision) |
+| D-11 | **Vision only for pages without a text layer** | Digital PDFs are free to parse; vision tokens are spent only on scans and photos | Vision for every page (slower and pricier, risk of transcription errors) |
+| D-12 | **One table per index variant** | Experiments (chunk size, embedding dims, contextual on/off) never overwrite each other; the eval harness compares tables | One table, rebuilt per experiment |
+| D-13 | **No queue in front of LanceDB writes** | Uploads are rare and Lance commits use S3 conditional writes; a conflict fails the invocation and S3 retries | SQS FIFO for strict serialisation (more parts; S3 cannot target FIFO directly) |
+| D-14 | **A synthetic corpus, generated by script** | Tests, CI and future evals never touch real personal documents, and every parsing path (text, table, scan, image) is covered | Testing on real documents |
+
+### Blocker: Bedrock quotas
+
+All on-demand Bedrock quotas on this account are applied at **0**, below the AWS defaults (e.g.
+8,000,000 tokens/min). Service Quotas rejects increases because the default is already higher, so
+this is an account-level restriction for new accounts and needs an **AWS Support case**. Until it
+is lifted, ingestion fails at the first model call (metadata, vision or embedding). Everything else
+(S3 trigger, parsing, chunking, LanceDB) is tested with fakes and inside the real container.
+
+### Runbook: ingestion
+
+| Command | What |
+|---|---|
+| `make docqa-upload-samples` | Upload the synthetic documents to `raw/samples/`; S3 triggers ingestion |
+| `aws s3 cp my.pdf s3://docqa-dev-<account>/raw/` | Add your own document |
+| `make docqa-ingest` / `make docqa-ingest KEYS="raw/a.pdf"` | Backfill or re-run from your laptop (prints per-document results) |
+| `make docqa-stats` | Chunks in the index |
+| `aws logs tail /aws/lambda/docqa-dev-ingest --follow` | Watch ingestion (logs carry IDs and counts, never document text) |
 
 ## Login flow
 

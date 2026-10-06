@@ -1,0 +1,15 @@
+flowchart TB
+    up([You: aws s3 cp file s3://docqa-dev-ACCOUNT/raw/]) --> raw[(raw/ originals<br/>SSE-KMS)]
+    raw -- "s3:ObjectCreated / ObjectRemoved<br/>(prefix raw/, async, 1 retry)" --> fn["docqa-dev-ingest<br/>same image · docqa.ingest_app<br/>LWA → POST /events · 2 GB · 15 min"]
+    fn --> hash{content hash =<br/>cached parse?}
+    hash -- yes --> chunk
+    hash -- no --> type{file type}
+    type -- "PDF page with text layer" --> pypdf["pypdf layout mode<br/>aligned columns → Markdown table"]
+    type -- "scanned PDF page / PNG / JPEG" --> vision["render page (pypdfium2, 144 dpi)<br/>→ Nova 2 Lite vision → Markdown"]
+    pypdf --> meta
+    vision --> meta["metadata (Nova Micro → JSON)<br/>doc_type · institution · person · date"]
+    meta --> cache[(parsed/DOC_ID.json<br/>cache: parse once)]
+    cache --> chunk["structure-aware chunking<br/>~400 tokens · 15% overlap · tables split by row with header"]
+    chunk --> ctx["contextual header<br/>'Transcript · Northfield State · 2019 · p1'"]
+    ctx --> embed["Titan Text Embeddings V2<br/>1024 dims · normalised"]
+    embed --> lance[(lancedb/chunks__struct400__titan1024<br/>vectors + BM25 full-text index)]
