@@ -55,7 +55,7 @@ echo "$ARNS" | tr '\t' '\n' | while read -r arn; do
       aws lambda delete-function --region "$REGION" --function-name "$name" || true
       ;;
     apigateway)
-      api_id=$(echo "$arn" | sed -n 's#.*/apis/\([^/]*\)#\1#p')
+      api_id=$(echo "$arn" | sed -n 's#.*/apis/\([^/]*\).*#\1#p')
       echo "Deleting API Gateway API: $api_id"
       aws apigatewayv2 delete-api --region "$REGION" --api-id "$api_id" || true
       ;;

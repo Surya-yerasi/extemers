@@ -3,10 +3,21 @@ variable "region" {
   default = "us-east-1"
 }
 
-variable "github_repository" {
-  description = "owner/repo allowed to assume the CI roles."
+variable "github_subject_prefix" {
+  description = <<-EOT
+    Prefix of the GitHub OIDC token `sub` claim for the repo allowed to assume the CI roles.
+    This repo uses GitHub's immutable subject format, repo:OWNER@OWNER_ID/REPO@REPO_ID, which
+    stays bound to this exact repo even if it is renamed or a same-named repo is recreated.
+    Get the current value with:
+      gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+  EOT
   type        = string
-  default     = "Surya-yerasi/extemers"
+  default     = "repo:Surya-yerasi@61959369/extemers@1405205156"
+
+  validation {
+    condition     = startswith(var.github_subject_prefix, "repo:")
+    error_message = "github_subject_prefix must start with \"repo:\"."
+  }
 }
 
 variable "deploy_environment" {

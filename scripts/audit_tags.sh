@@ -33,5 +33,5 @@ aws resourcegroupstaggingapi get-resources \
 echo >&2
 echo "Note: CloudWatch Log Groups, API Gateway stages, and some other resource" >&2
 echo "types are not always covered by this API. Cross-check with:" >&2
-echo "  aws logs describe-log-groups --log-group-name-prefix /aws/lambda/calculator --region $REGION" >&2
-echo "  aws apigatewayv2 get-apis --region $REGION --query \"Items[?starts_with(Name,'calculator')]\"" >&2
+echo "  aws logs describe-log-groups --log-group-name-prefix /aws/lambda/<app>- --region $REGION" >&2
+echo "  aws lambda list-functions --region $REGION --query \"Functions[?starts_with(FunctionName,'<app>-')].FunctionName\"" >&2

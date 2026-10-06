@@ -98,7 +98,7 @@ data "aws_iam_policy_document" "trust_plan" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["repo:${var.github_repository}:pull_request"]
+      values   = ["${var.github_subject_prefix}:pull_request"]
     }
   }
 }
@@ -136,7 +136,7 @@ data "aws_iam_policy_document" "trust_deploy" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
-      values   = ["repo:${var.github_repository}:environment:${var.deploy_environment}"]
+      values   = ["${var.github_subject_prefix}:environment:${var.deploy_environment}"]
     }
   }
 }

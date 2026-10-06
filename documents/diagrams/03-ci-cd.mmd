@@ -1,0 +1,22 @@
+flowchart LR
+    pr([Pull request opened / updated]) --> ci
+    push([Push / merge to main]) --> ci
+
+    subgraph ci["ci.yml"]
+        direction TB
+        svc["service jobs<br/>(added per service: lint · test · image build)"]
+        tfs["terraform-static<br/>make tf-fmt · make tf-validate"]
+        plan["terraform-plan (PRs only)<br/>assume extemers-github-plan via OIDC<br/>terraform plan → PR comment"]
+        tfs --> plan
+    end
+
+    ci -- "workflow_run: completed<br/>success + event == push" --> dep
+
+    subgraph dep["deploy.yml · environment: dev"]
+        direction TB
+        a[checkout head_sha<br/>assume extemers-github-deploy via OIDC]
+        ap[terraform init · plan · apply]
+        a --> ap
+    end
+
+    manual([workflow_dispatch]) --> dep
