@@ -1,12 +1,13 @@
-"""Question answering: retrieve with the chosen strategy, then generate a cited answer.
+"""Question answering: (rewrite a follow-up) → retrieve with the chosen strategy → generate a
+cited answer. Every stage is a span in the turn's trace.
 
 retrieve() is separate from ask() so the eval harness can score retrieval on its own,
 without paying for generation.
 """
 
-import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+import secrets
+from collections.abc import Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -17,11 +18,20 @@ from docqa.domain.answering import (
     build_user_prompt,
     parse_answer,
 )
+from docqa.domain.conversation import (
+    REWRITE_SYSTEM,
+    Exchange,
+    build_rewrite_prompt,
+    parse_rewrite,
+)
 from docqa.domain.costs import CostEstimate, rerank_cost, token_cost
 from docqa.domain.retrieval import RetrievedChunk, Strategy, rrf_fuse
+from docqa.domain.tracing import Trace, Tracer
 from docqa.ports import ChunkSearcher, Embedder, Generator, Reranker
 
 MAX_QUESTION_CHARS = 1000
+REWRITE_MAX_TOKENS = 120
+TRACE_TOP = 5  # chunks listed per retrieval span in the trace
 
 
 class Retrieval(BaseModel):
@@ -42,19 +52,24 @@ class AskResult(BaseModel):
     tokens: dict[str, int]
     cost: CostEstimate
     models: dict[str, str]
-
-
-@contextmanager
-def _timed(timings: dict[str, float], stage: str) -> Iterator[None]:
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        timings[stage] = round((time.perf_counter() - start) * 1000, 1)
+    standalone_question: str = ""  # what was searched for (differs after a rewrite)
+    trace: Trace | None = None
 
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)  # Titan does not bill per call, so an estimate is enough
+
+
+def _top(chunks: Sequence[RetrievedChunk], stage: str) -> list[dict[str, Any]]:
+    """Compact view of a ranked list for the trace: file, chunk, score at this stage."""
+    return [
+        {
+            "chunk_id": c.chunk_id,
+            "file": c.source_key.rsplit("/", 1)[-1],
+            "score": c.scores.get(stage),
+        }
+        for c in chunks[:TRACE_TOP]
+    ]
 
 
 class QAService:
@@ -79,89 +94,151 @@ class QAService:
         self._top_k = top_k
         self._max_answer_tokens = max_answer_tokens
 
-    def retrieve(self, question: str, strategy: Strategy) -> Retrieval:
-        question = _validate(question)
-        timings: dict[str, float] = {}
+    def retrieve(
+        self, question: str, strategy: Strategy, tracer: Tracer | None = None
+    ) -> Retrieval:
+        question = validate_question(question)
+        tracer = tracer or Tracer(f"r_{secrets.token_hex(8)}")
         tokens: dict[str, int] = {}
         cost = CostEstimate()
         dense: list[RetrievedChunk] = []
         lexical: list[RetrievedChunk] = []
 
         if strategy != Strategy.BM25:
-            with _timed(timings, "embed"):
-                vector = self._embedder.embed([question])[0]
             tokens["embed_input"] = _estimate_tokens(question)
-            cost = cost.add(token_cost(self._embedding_model_id, tokens["embed_input"]))
-            with _timed(timings, "dense_search"):
+            embed_cost = token_cost(self._embedding_model_id, tokens["embed_input"])
+            cost = cost.add(embed_cost)
+            with tracer.span(
+                "embed",
+                model=self._embedding_model_id,
+                input_tokens=tokens["embed_input"],
+                cost_usd=embed_cost.usd,
+            ):
+                vector = self._embedder.embed([question])[0]
+            with tracer.span("dense_search", limit=self._candidates) as span:
                 dense = self._searcher.vector_search(vector, self._candidates)
+                span.set(hits=len(dense), top=_top(dense, "dense"))
 
         if strategy != Strategy.DENSE:
-            with _timed(timings, "bm25_search"):
+            with tracer.span("bm25_search", limit=self._candidates) as span:
                 lexical = self._searcher.text_search(question, self._candidates)
+                span.set(hits=len(lexical), top=_top(lexical, "bm25"))
 
         if strategy == Strategy.DENSE:
             chunks = dense[: self._top_k]
         elif strategy == Strategy.BM25:
             chunks = lexical[: self._top_k]
         else:
-            with _timed(timings, "fuse"):
+            with tracer.span("fuse", method="rrf", k=60) as span:
                 fused = rrf_fuse([dense, lexical], limit=self._candidates)
+                span.set(candidates=len(fused), top=_top(fused, "rrf"))
             if strategy == Strategy.HYBRID:
                 chunks = fused[: self._top_k]
             else:
-                with _timed(timings, "rerank"):
+                rerank_usd = rerank_cost(self._reranker.model_id) if fused else CostEstimate()
+                cost = cost.add(rerank_usd)
+                with tracer.span(
+                    "rerank", model=self._reranker.model_id, cost_usd=rerank_usd.usd
+                ) as span:
                     chunks = self._reranker.rerank(question, fused, self._top_k)
-                if fused:
-                    cost = cost.add(rerank_cost(self._reranker.model_id))
+                    span.set(top=_top(chunks, "rerank"))
 
         return Retrieval(
-            strategy=strategy, chunks=chunks, timings_ms=timings, tokens=tokens, cost=cost
+            strategy=strategy,
+            chunks=chunks,
+            timings_ms=tracer.finish().timings_ms,
+            tokens=tokens,
+            cost=cost,
         )
 
-    def ask(self, question: str, strategy: Strategy) -> AskResult:
-        start = time.perf_counter()
-        retrieval = self.retrieve(question, strategy)
-        timings = dict(retrieval.timings_ms)
-        tokens = dict(retrieval.tokens)
-        cost = retrieval.cost
+    def ask(
+        self,
+        question: str,
+        strategy: Strategy,
+        history: Sequence[Exchange] = (),
+        tracer: Tracer | None = None,
+    ) -> AskResult:
+        question = validate_question(question)
+        tracer = tracer or Tracer(f"q_{secrets.token_hex(8)}")
+        tracer.set(strategy=strategy.value)
+        tokens: dict[str, int] = {}
+        cost = CostEstimate()
+
+        standalone = question
+        if history:  # a follow-up: make it searchable on its own
+            with tracer.span(
+                "rewrite", model=self._generator.model_id, history_turns=len(history)
+            ) as span:
+                rewrite = self._generator.generate(
+                    REWRITE_SYSTEM, build_rewrite_prompt(history, question), REWRITE_MAX_TOKENS
+                )
+                standalone = parse_rewrite(rewrite.text, question, MAX_QUESTION_CHARS)
+                rewrite_cost = token_cost(
+                    self._generator.model_id, rewrite.input_tokens, rewrite.output_tokens
+                )
+                span.set(
+                    question=question,
+                    standalone_question=standalone,
+                    input_tokens=rewrite.input_tokens,
+                    output_tokens=rewrite.output_tokens,
+                    cost_usd=rewrite_cost.usd,
+                )
+            tokens["rewrite_input"] = rewrite.input_tokens
+            tokens["rewrite_output"] = rewrite.output_tokens
+            cost = cost.add(rewrite_cost)
+
+        retrieval = self.retrieve(standalone, strategy, tracer)
+        tokens.update(retrieval.tokens)
+        cost = cost.add(retrieval.cost)
 
         if retrieval.chunks:
-            with _timed(timings, "generate"):
+            with tracer.span(
+                "generate", model=self._generator.model_id, sources=len(retrieval.chunks)
+            ) as span:
                 generation = self._generator.generate(
                     SYSTEM_PROMPT,
-                    build_user_prompt(question.strip(), retrieval.chunks),
+                    build_user_prompt(standalone, retrieval.chunks),
                     self._max_answer_tokens,
+                )
+                parsed = parse_answer(generation.text, retrieval.chunks)
+                generate_cost = token_cost(
+                    self._generator.model_id, generation.input_tokens, generation.output_tokens
+                )
+                span.set(
+                    input_tokens=generation.input_tokens,
+                    output_tokens=generation.output_tokens,
+                    cost_usd=generate_cost.usd,
+                    not_found=parsed.not_found,
+                    citations=[c.number for c in parsed.citations],
                 )
             tokens["generate_input"] = generation.input_tokens
             tokens["generate_output"] = generation.output_tokens
-            cost = cost.add(
-                token_cost(
-                    self._generator.model_id, generation.input_tokens, generation.output_tokens
-                )
-            )
-            parsed = parse_answer(generation.text, retrieval.chunks)
+            cost = cost.add(generate_cost)
             answer, not_found, citations = parsed.text, parsed.not_found, parsed.citations
         else:  # nothing indexed or nothing matched: do not pay for a model call
             answer, not_found, citations = NOT_FOUND_MESSAGE, True, []
 
-        timings["total"] = round((time.perf_counter() - start) * 1000, 1)
         models = {"embedding": self._embedding_model_id, "generation": self._generator.model_id}
         if strategy == Strategy.HYBRID_RERANK:
             models["rerank"] = self._reranker.model_id
+        tracer.set(not_found=not_found, cost_usd=cost.usd)
+        trace = tracer.finish()
         return AskResult(
             strategy=strategy,
             answer=answer,
             not_found=not_found,
             citations=citations,
             chunks=retrieval.chunks,
-            timings_ms=timings,
+            timings_ms={**trace.timings_ms, "total": trace.duration_ms},
             tokens=tokens,
             cost=cost,
             models=models,
+            standalone_question=standalone,
+            trace=trace,
         )
 
 
-def _validate(question: str) -> str:
+def validate_question(question: str) -> str:
     question = question.strip()
     if not question:
         raise ValueError("question is empty")

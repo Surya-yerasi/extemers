@@ -4,6 +4,8 @@ Function URL requests to it unchanged, so local and deployed behaviour match.
     uvicorn docqa.web.app:create_app --factory --port 8080
 """
 
+import json
+import os
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -19,9 +21,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from docqa.adapters.emf_metrics import EmfMetrics, NoopMetrics, TurnMetrics
 from docqa.config import AppConfig, QASettings, get_config
+from docqa.domain.conversation import ConversationSummary
 from docqa.domain.retrieval import Strategy
-from docqa.pipelines.qa import MAX_QUESTION_CHARS, AskResult, QAService
+from docqa.pipelines.chat import (
+    ChatService,
+    Conversation,
+    ConversationFullError,
+    ConversationNotFoundError,
+    Turn,
+    TurnFailedError,
+)
+from docqa.pipelines.qa import MAX_QUESTION_CHARS
 from docqa.ports import ModelUnavailableError
 from docqa.web.auth import (
     OAUTH_COOKIE,
@@ -200,54 +212,134 @@ def me(user: CurrentUser) -> dict[str, str]:
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
     strategy: Strategy = Strategy.HYBRID
+    conversation_id: str | None = Field(default=None, max_length=64)
 
 
-def _qa_service(request: Request) -> QAService:
+class AskResponse(BaseModel):
+    conversation: ConversationSummary
+    turn: Turn
+
+
+def _chat_service(request: Request) -> ChatService:
     """Built on first use, so /health and login never touch Bedrock or LanceDB."""
-    if request.app.state.qa is None:
-        bucket = _config(request).docs_bucket
-        if not bucket:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "no document index configured")
-        request.app.state.qa = request.app.state.qa_factory(bucket)
-    qa: QAService = request.app.state.qa
-    return qa
+    if request.app.state.chat is None:
+        try:
+            request.app.state.chat = request.app.state.chat_factory(_config(request).docs_bucket)
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "no document index configured"
+            ) from exc
+    chat: ChatService = request.app.state.chat
+    return chat
+
+
+def _lambda_ids(request: Request) -> dict[str, str]:
+    """Correlation IDs added by Lambda / the Web Adapter, when running in AWS."""
+    ids: dict[str, str] = {}
+    if xray := request.headers.get("x-amzn-trace-id"):
+        ids["xray_trace_id"] = xray
+    try:
+        context = json.loads(request.headers.get("x-amzn-lambda-context", "{}"))
+        if isinstance(context, dict) and context.get("request_id"):
+            ids["lambda_request_id"] = str(context["request_id"])
+    except json.JSONDecodeError:
+        pass
+    return ids
+
+
+def _model_failure(exc: BaseException, metrics: TurnMetrics, trace_id: str) -> HTTPException:
+    """Map a model/provider failure to a safe HTTP error, and count it."""
+    if isinstance(exc, ModelUnavailableError):  # local mode: Ollama down or model missing
+        metrics.model_error(trace_id, "ModelUnavailable")
+        return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc))
+    if isinstance(exc, ClientError):
+        code = exc.response.get("Error", {}).get("Code", "Unknown")
+        logger.warning("ask_upstream_error", extra={"error_code": code, "trace_id": trace_id})
+        metrics.model_error(trace_id, code)
+        if code in {"ThrottlingException", "ServiceQuotaExceededException"}:
+            return HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "model quota reached; try again later"
+            )
+        return HTTPException(status.HTTP_502_BAD_GATEWAY, "upstream service error")
+    if isinstance(exc, httpx.HTTPError):
+        logger.warning("ask_model_http_error", extra={"error": type(exc).__name__})
+        metrics.model_error(trace_id, type(exc).__name__)
+        return HTTPException(status.HTTP_502_BAD_GATEWAY, "model service error")
+    raise exc
 
 
 @router.post("/api/ask")
-def ask(body: AskRequest, request: Request, user: CurrentUser) -> AskResult:
-    qa = _qa_service(request)
+def ask(body: AskRequest, request: Request, user: CurrentUser) -> AskResponse:
+    chat = _chat_service(request)
+    metrics: TurnMetrics = request.app.state.metrics
     try:
-        result = qa.ask(body.question, body.strategy)
+        conversation, turn = chat.ask(
+            user.sub, body.question, body.strategy, body.conversation_id, _lambda_ids(request)
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-    except ModelUnavailableError as exc:  # local mode: Ollama not running or model not pulled
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
-    except httpx.HTTPError as exc:
-        logger.warning("ask_model_http_error", extra={"error": type(exc).__name__})
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "model service error") from exc
-    except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code", "Unknown")
-        logger.warning("ask_upstream_error", extra={"error_code": code, "user_sub": user.sub})
-        if code in {"ThrottlingException", "ServiceQuotaExceededException"}:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, "model quota reached; try again later"
-            ) from exc
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "upstream service error") from exc
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found") from exc
+    except ConversationFullError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except TurnFailedError as exc:
+        error = _model_failure(exc.__cause__ or exc, metrics, exc.turn.turn_id)
+        # The failed turn is saved; tell the page which trace explains it.
+        error.headers = {"X-Docqa-Trace-Id": exc.turn.turn_id}
+        raise error from exc
+
+    result = turn.result
+    if result is None:  # cannot happen: ChatService raises TurnFailedError instead
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "turn has no result")
+    metrics.turn(turn.turn_id, result)
     # IDs, counts and timings only: never the question, chunks or answer.
     logger.info(
-        "ask_completed",
+        "turn_completed",
         extra={
             "user_sub": user.sub,
+            "conversation_id": conversation.conversation_id,
+            "trace_id": turn.turn_id,
             "strategy": result.strategy,
+            "rewritten": result.standalone_question != turn.question,
             "not_found": result.not_found,
             "chunks": len(result.chunks),
             "citations": len(result.citations),
             "timings_ms": result.timings_ms,
             "tokens": result.tokens,
             "cost_usd": result.cost.usd,
+            **_lambda_ids(request),
         },
     )
-    return result
+    return AskResponse(conversation=conversation.summary(), turn=turn)
+
+
+@router.get("/api/conversations")
+def list_conversations(request: Request, user: CurrentUser) -> list[ConversationSummary]:
+    return list(_chat_service(request).list(user.sub))
+
+
+@router.get("/api/conversations/{conversation_id}")
+def get_conversation(conversation_id: str, request: Request, user: CurrentUser) -> Conversation:
+    try:
+        return _chat_service(request).get(user.sub, conversation_id)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found") from exc
+
+
+@router.delete("/api/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_conversation(conversation_id: str, request: Request, user: CurrentUser) -> None:
+    try:
+        _chat_service(request).delete(user.sub, conversation_id)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found") from exc
+
+
+@router.get("/api/traces/{trace_id}")
+def get_trace(trace_id: str, request: Request, user: CurrentUser) -> Turn:
+    try:
+        return _chat_service(request).turn(user.sub, trace_id)[1]
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "trace not found") from exc
 
 
 async def _security_headers(
@@ -264,17 +356,24 @@ async def _not_authenticated(request: Request, _: Exception) -> Response:
     return RedirectResponse("/login", status.HTTP_303_SEE_OTHER)
 
 
-def _default_qa_factory(bucket: str) -> QAService:
-    from docqa.pipelines.wiring import build_qa_service  # noqa: PLC0415 - keeps cold start lean
+def _default_chat_factory(bucket: str | None) -> ChatService:
+    from docqa.pipelines.wiring import build_chat_service  # noqa: PLC0415 - keeps cold start lean
 
-    return build_qa_service(QASettings(), bucket)
+    return build_chat_service(QASettings(), bucket)
+
+
+def _default_metrics(config: AppConfig) -> TurnMetrics:
+    if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):  # only Lambda ships stdout to CloudWatch
+        return EmfMetrics({"service": "docqa-web", "environment": config.environment})
+    return NoopMetrics()
 
 
 def create_app(
     config: AppConfig | None = None,
     verifier: TokenVerifier | None = None,
     http: httpx.Client | None = None,
-    qa: QAService | None = None,
+    chat: ChatService | None = None,
+    metrics: TurnMetrics | None = None,
 ) -> FastAPI:
     """Build the app. Dependencies are injectable for tests; defaults come from config."""
     config = config or get_config()
@@ -284,8 +383,9 @@ def create_app(
         config.cognito_issuer, config.cognito_client_id, jwks_key_resolver(config.cognito_issuer)
     )
     app.state.http = http or httpx.Client(timeout=10)
-    app.state.qa = qa
-    app.state.qa_factory = _default_qa_factory
+    app.state.chat = chat
+    app.state.chat_factory = _default_chat_factory
+    app.state.metrics = metrics or _default_metrics(config)
     app.middleware("http")(_security_headers)
     app.add_exception_handler(NotAuthenticatedError, _not_authenticated)
     app.include_router(router)

@@ -10,8 +10,9 @@ It is built in phases, and this document grows with each one.
 | 2 | Ingestion: parse → chunk → embed → LanceDB on S3 | Deployed (Bedrock calls blocked until the account quota case is resolved) |
 | 3 | Ask page with retrieval strategies and citations | Deployed (answers wait for Bedrock access) |
 | 3b | Local mode: the same app on free Ollama models, documents kept on the laptop | Done |
-| 4 | Evaluation harness (retrieval metrics, RAGAS, latency, cost) | **This PR** |
-| 5 | Dashboards and alarms | Planned |
+| 4 | Evaluation harness (retrieval metrics, RAGAS, latency, cost) | Done |
+| 5a | Conversations, follow-up questions, per-question traces (Traces tab), EMF metrics | **This PR** |
+| 5b | CloudWatch dashboard, alarms, email alerts | Next PR (needs a bootstrap update) |
 | 6 | Agents (LangGraph), platform comparisons | Planned |
 
 ## Phase 1 architecture
@@ -339,6 +340,72 @@ First experiment (2026-10-06): 100-token chunks made 22 chunks instead of 15 and
 retrieval. Hybrid hit@5 fell from 1.000 to 0.930 and BM25 from 0.977 to 0.907, because small
 chunks separate facts from the heading that says which document (or which transcript) they
 belong to. The 400-token default stays.
+
+## Phase 5a: conversations and traces
+
+The page now has two tabs:
+- **Chat:** a sidebar of your conversations with *New conversation*, plus a message thread.
+- **Traces:** every question's trace, opened by ID or from the link under each answer.
+
+Each view has an address (`#/c/<conversation>`, `#/t/<trace>`), so the browser's back and
+forward buttons and bookmarks work.
+
+**IDs.** A conversation is `c_<16 hex>`; question *n* in it is turn `c_<16 hex>.n`. The turn
+ID *is* the trace ID. It appears under the answer, in the `turn_completed` log line and on the
+`trace_id` property of the CloudWatch metrics, so one ID ties together the page, the logs and
+the metrics.
+
+**Follow-up questions.** From the second question on, a `rewrite` step turns the follow-up into
+a standalone question using the last 4 exchanges. Only the rewritten question is searched, and
+the answer prompt still contains only that question and the retrieved sources, so earlier
+answers cannot leak into grounding. The page shows *Searched as: "…"* when the wording changed.
+Example (local mode): "And for my master's?" became "What was my cumulative GPA for my master's
+degree?" and the answer was 3.72.
+
+**Traces.** Each span records:
+- its start offset and duration
+- its status (an error span carries the exception)
+- attributes: model, tokens, cost, top 5 chunks with scores per retrieval stage, and the rewrite
+  input and output
+
+The Traces tab shows them as a timeline; click a step to see its attributes. Also shown: the
+chunks given to the model, the raw JSON, and in AWS the X-Ray trace ID and Lambda request ID.
+**Failed questions are saved too**, with the failing span, so a throttled Bedrock call or a
+stopped Ollama shows *where* it failed. The error response carries `X-Docqa-Trace-Id`.
+
+**Storage.** Conversations are JSON in the same `BlobStore` as the documents:
+- S3 when deployed, under `conversations/<hash of user sub>/`, KMS-encrypted like everything else
+- `.data/conversations/` in local mode
+
+Each user also has an `index.json`, so the sidebar needs one read. Users only ever see their
+own conversations; any other ID returns 404, never 403, so IDs cannot be probed.
+
+| Endpoint | What |
+|---|---|
+| `POST /api/ask` | `{question, strategy, conversation_id?}` → `{conversation, turn}` (a new conversation when no ID) |
+| `GET /api/conversations` | Your conversations, newest first |
+| `GET /api/conversations/{id}` | One conversation with all turns and traces |
+| `DELETE /api/conversations/{id}` | Delete it |
+| `GET /api/traces/{trace_id}` | One turn with its trace |
+
+**Metrics (EMF).** In Lambda, each turn prints one Embedded Metric Format line, which
+CloudWatch turns into metrics in namespace `docqa` (dimensions `service`, `environment`):
+`AskLatency`, `RetrievalLatency`, `GenerationLatency`, `CostUSD`, `NotFound`, `ModelErrors`.
+Six metrics stay inside the 10 free custom metrics. Strategy and trace ID are properties of the
+line, not dimensions: they are queryable in Logs Insights and cost nothing extra. Locally,
+metrics are switched off.
+
+### Phase 5a decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-34 | **App-level traces stored with the turn** | Work identically locally and in Lambda; viewable in the app by ID; no extra service. The Web Adapter runs the app as a long-lived server, so the X-Ray SDK cannot attach per-request subsegments; the X-Ray trace ID is recorded for correlation instead | X-Ray SDK subsegments; OpenTelemetry collector (more moving parts than this needs) |
+| D-35 | **Conversations in the existing bucket via `BlobStore`** | No new service, no deploy-role change, same encryption and access controls as the documents; local mode for free | DynamoDB (the production choice at scale: needs a bootstrap change; a later swap behind the same port) |
+| D-36 | **Rewrite follow-ups; ground answers on the standalone question only** | Retrieval needs a self-contained query; keeping history out of the answer prompt keeps answers grounded in sources | Sending the full history to the answer model |
+| D-37 | **Turn ID = trace ID = `<conversation>.<n>`** | A trace can be found from its ID alone, with no extra lookup table | Random trace IDs plus an index |
+| D-38 | **Save failed turns** | The trace of a failure is the most useful one | Discarding failures (only a log line would remain) |
+| D-39 | **EMF metrics with 2 dimensions** | No API calls, no IAM, free-tier; per-strategy detail via Logs Insights | Strategy as a dimension (4× the billed metrics) |
+| D-40 | **Unconditional `s3:ListBucket` for both Lambda roles** | A prefix condition does not cover the existence check S3 makes on a missing object, so S3 returned 403 instead of 404. Confirmed with the IAM policy simulator; it would have failed every new-document ingest and every first conversation. Lists names only; contents stay prefix-scoped | Keeping the condition and listing instead of `HeadObject` (third-party code such as LanceDB makes its own existence checks) |
 
 ## Login flow
 

@@ -1,10 +1,15 @@
 """In-memory implementations of the ports, for pipeline tests."""
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
+from docqa.domain.conversation import REWRITE_SYSTEM
 from docqa.domain.models import Chunk, DocMetadata, ParsedDocument
 from docqa.domain.retrieval import RetrievedChunk, ranked
 from docqa.ports import Generation
+
+if TYPE_CHECKING:
+    from docqa.pipelines.chat import ChatService
 
 
 class MemoryBlobStore:
@@ -112,13 +117,22 @@ class FakeSearcher:
 
 
 class FakeGenerator:
+    """Answers with `text`; answers follow-up rewrite requests with `rewrite`."""
+
     model_id = "us.amazon.nova-micro-v1:0"
 
-    def __init__(self, text: str = "Your GPA was 3.86 [1].") -> None:
+    def __init__(
+        self, text: str = "Your GPA was 3.86 [1].", rewrite: str = "What was my master's GPA?"
+    ) -> None:
         self.text = text
+        self.rewrite = rewrite
         self.prompts: list[str] = []
+        self.rewrite_prompts: list[str] = []
 
     def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+        if system == REWRITE_SYSTEM:
+            self.rewrite_prompts.append(prompt)
+            return Generation(text=self.rewrite, input_tokens=200, output_tokens=12)
         self.prompts.append(prompt)
         return Generation(text=self.text, input_tokens=1000, output_tokens=100)
 
@@ -137,3 +151,23 @@ class FakeReranker:
         self.calls += 1
         out = [c.model_copy(update={"scores": {**c.scores, "rerank": 0.5}}) for c in chunks]
         return ranked(list(reversed(out))[:top_n], "rerank")
+
+
+def chat_service(
+    generator: FakeGenerator | None = None,
+    searcher: FakeSearcher | None = None,
+    blobs: MemoryBlobStore | None = None,
+) -> "ChatService":
+    from docqa.adapters.conversation_store import BlobConversationStore  # noqa: PLC0415
+    from docqa.pipelines.chat import ChatService  # noqa: PLC0415
+    from docqa.pipelines.qa import QAService  # noqa: PLC0415
+
+    qa = QAService(
+        searcher=searcher
+        or FakeSearcher(dense=[retrieved("a", "GPA 3.86")], bm25=[retrieved("a", "GPA 3.86")]),
+        embedder=FakeEmbedder(),
+        embedding_model_id="amazon.titan-embed-text-v2:0",
+        generator=generator or FakeGenerator(),
+        reranker=FakeReranker(),
+    )
+    return ChatService(qa, BlobConversationStore(blobs or MemoryBlobStore()))

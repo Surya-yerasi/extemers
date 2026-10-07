@@ -57,7 +57,8 @@ module "docqa_web" {
   additional_policy_json = data.aws_iam_policy_document.docqa_web.json
 }
 
-# The web function answers questions: read-only on the index, no access to raw/ or parsed/.
+# The web function answers questions: read-only on the index, read/write on conversations/,
+# no access to raw/ or parsed/ contents.
 data "aws_iam_policy_document" "docqa_web" {
   statement {
     sid       = "ReadOwnConfig"
@@ -72,19 +73,23 @@ data "aws_iam_policy_document" "docqa_web" {
   }
 
   statement {
-    sid       = "ListIndex"
+    sid       = "ReadWriteConversations"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${module.docqa_bucket.bucket_arn}/conversations/*"]
+  }
+
+  # Unconditional on purpose (object names only, never contents). Without it S3 answers
+  # 403 instead of 404 for a missing object, because a prefix condition does not apply to
+  # HeadObject/GetObject; "is there a conversation index yet?" would then fail.
+  statement {
+    sid       = "ListBucket"
     actions   = ["s3:ListBucket"]
     resources = [module.docqa_bucket.bucket_arn]
-    condition {
-      test     = "StringLike"
-      variable = "s3:prefix"
-      values   = ["lancedb/*", "lancedb"]
-    }
   }
 
   statement {
-    sid       = "DecryptIndex"
-    actions   = ["kms:Decrypt"]
+    sid       = "UseBucketKey"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
     resources = [local.kms_key_arn]
     condition {
       test     = "StringEquals"
@@ -150,15 +155,12 @@ data "aws_iam_policy_document" "docqa_ingest" {
     resources = ["${module.docqa_bucket.bucket_arn}/parsed/*", "${module.docqa_bucket.bucket_arn}/lancedb/*"]
   }
 
+  # Unconditional: see the web policy. With a prefix condition, the "already parsed?" check
+  # on a new document got 403 instead of 404 and failed every ingest (found 2026-10-07).
   statement {
-    sid       = "ListOwnPrefixes"
+    sid       = "ListBucket"
     actions   = ["s3:ListBucket"]
     resources = [module.docqa_bucket.bucket_arn]
-    condition {
-      test     = "StringLike"
-      variable = "s3:prefix"
-      values   = ["raw/*", "parsed/*", "lancedb/*", "lancedb"]
-    }
   }
 
   statement {

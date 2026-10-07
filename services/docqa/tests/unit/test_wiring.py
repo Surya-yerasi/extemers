@@ -2,12 +2,13 @@ from pathlib import Path
 
 import pytest
 
+from docqa.adapters.conversation_store import BlobConversationStore
 from docqa.adapters.lancedb_index import LanceChunkIndex
 from docqa.adapters.local_blobs import LocalBlobStore
 from docqa.adapters.ollama import OllamaEmbedder, OllamaGenerator, PassthroughReranker
 from docqa.adapters.s3_blobs import S3BlobStore
 from docqa.config import IngestSettings, Provider, QASettings
-from docqa.pipelines.wiring import build_ingest_service, build_qa_service
+from docqa.pipelines.wiring import build_chat_service, build_ingest_service, build_qa_service
 
 
 @pytest.fixture(autouse=True)
@@ -49,3 +50,13 @@ def test_bedrock_ingest_without_bucket_is_rejected() -> None:
     settings = IngestSettings.model_construct(provider=Provider.BEDROCK, docs_bucket=None)
     with pytest.raises(ValueError, match="bucket is required"):
         build_ingest_service(settings)
+
+
+def test_chat_conversations_live_next_to_the_documents(tmp_path: Path) -> None:
+    local = build_chat_service(QASettings(provider=Provider.LOCAL, local_data_dir=tmp_path), None)
+    assert isinstance(local._store, BlobConversationStore)
+    assert isinstance(local._store._blobs, LocalBlobStore)
+    deployed = build_chat_service(QASettings(lancedb_uri=str(tmp_path)), "bucket")
+    assert isinstance(deployed._store._blobs, S3BlobStore)  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="bucket is required"):
+        build_chat_service(QASettings(), None)
