@@ -250,3 +250,14 @@ module "docqa_budget" {
   actual_alert_usd  = 5
   alert_emails      = compact([for e in split(",", var.alert_emails) : trimspace(e)])
 }
+
+module "docqa_observability" {
+  providers            = { aws = aws.docqa }
+  source               = "../../modules/observability"
+  name                 = local.docqa_name
+  region               = var.region
+  environment          = "dev" # the web function's DOCQA_ENVIRONMENT (metric dimension)
+  web_function_name    = module.docqa_web.function_name
+  ingest_function_name = module.docqa_ingest.function_name
+  alert_emails         = compact([for e in split(",", var.alert_emails) : trimspace(e)])
+}
