@@ -94,11 +94,14 @@ class OllamaGenerator:
         self._model = model
         self.model_id = LOCAL_PREFIX + model
 
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+    def generate(
+        self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+    ) -> Generation:
         response = self._client.chat(
             self._model,
             [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             max_tokens,
+            json_output=json_mode,
         )
         return Generation(
             text=_content(response),

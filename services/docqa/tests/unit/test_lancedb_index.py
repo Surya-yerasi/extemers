@@ -108,3 +108,12 @@ def test_searcher_on_missing_table_returns_nothing(tmp_path: Path) -> None:
     assert searcher.vector_search(vec(0), limit=5) == []
     assert searcher.text_search("gpa", limit=5) == []
     assert not (tmp_path / "empty" / "t.lance").exists()  # read-only: nothing created
+
+
+def test_quoted_queries_search_the_words(tmp_path: Path) -> None:
+    uri = str(tmp_path / "db")
+    doc = parsed("d1", "Predicting River Flooding with sensors, magna cum laude")
+    LanceChunkIndex(uri, "t", dimensions=4).upsert_document(doc, chunk_document(doc), [vec(0)])
+    searcher = LanceChunkSearcher(uri, "t")
+    assert [c.doc_id for c in searcher.text_search('"Predicting River Flooding"', 5)] == ["d1"]
+    assert searcher.text_search('""', 5) == []

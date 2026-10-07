@@ -57,6 +57,7 @@ STRATEGY_LABELS = {
     Strategy.BM25: "BM25 (keywords)",
     Strategy.HYBRID: "Hybrid (dense + BM25, RRF)",
     Strategy.HYBRID_RERANK: "Hybrid + Cohere rerank",
+    Strategy.AGENT: "Agent (plan, grade, retry, verify)",
 }
 
 SECURITY_HEADERS = {

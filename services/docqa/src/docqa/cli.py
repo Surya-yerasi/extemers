@@ -113,6 +113,8 @@ def _eval(args: argparse.Namespace, settings: IngestSettings) -> int:
         if args.retrieval_only
         else qa_settings.generation_model_id,
         "candidates / top_k": f"{qa_settings.candidates} / {qa_settings.top_k}",
+        "agent": f"max_retrievals={qa_settings.agent_max_retrievals}, "
+        f"verify={qa_settings.agent_verify}",
         "judge": judge.model_id if judge else "none",
     }
     report = render_report(summaries, meta)

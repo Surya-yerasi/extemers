@@ -226,6 +226,8 @@ label.inline { font-weight: 600; }
 .waterfall .track { position: relative; height: 0.7rem; background: var(--panel); border-radius: 3px; }
 .waterfall .bar { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
 .waterfall .span.failed .bar { background: var(--error); }
+.waterfall .span.nested .bar { opacity: 0.55; }
+.waterfall .span.nested .name { color: var(--muted); }
 .waterfall .span.failed .name { color: var(--error); }
 .waterfall .dur { text-align: right; }
 .waterfall pre { margin: 0; padding: 0.5rem 0.75rem; background: var(--panel); font-size: 0.75rem; overflow-x: auto; }

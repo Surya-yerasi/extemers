@@ -1,0 +1,16 @@
+%% Matches the compiled LangGraph (AgentRunner.mermaid()); edge labels added by hand.
+flowchart TD
+    start([question<br/>standalone, after any follow-up rewrite]) --> plan
+    plan["<b>plan</b> · LLM, JSON<br/>original question + 1-3 search queries<br/>one query per fact"] --> retrieve
+    retrieve["<b>retrieve</b><br/>hybrid search per new query<br/>RRF across queries and earlier rounds · top 5"] --> grade
+    grade{"<b>grade</b> · LLM, JSON<br/>do the sources state every needed fact?"}
+    grade -- "missing, new query,<br/>round &lt; max_retrievals (2)" --> retrieve
+    grade -- "sufficient, or out of rounds" --> generate
+    grade -- "retrieval-only (eval)" --> stop
+    generate["<b>generate</b><br/>same grounded prompt as other strategies<br/>cites [n] or NOT_FOUND"]
+    generate -- "answered, verify on" --> verify
+    generate -- "not found / verify off / already retried" --> stop
+    verify{"<b>verify</b> · LLM, JSON<br/>is every claim stated by a source?"}
+    verify -- "supported" --> stop
+    verify -- "unsupported claim (once)" --> generate
+    stop([answer + citations + trace])

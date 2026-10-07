@@ -129,7 +129,9 @@ class FakeGenerator:
         self.prompts: list[str] = []
         self.rewrite_prompts: list[str] = []
 
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+    def generate(
+        self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+    ) -> Generation:
         if system == REWRITE_SYSTEM:
             self.rewrite_prompts.append(prompt)
             return Generation(text=self.rewrite, input_tokens=200, output_tokens=12)

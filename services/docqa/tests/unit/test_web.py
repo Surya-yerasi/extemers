@@ -312,7 +312,9 @@ class FailingGenerator(FakeGenerator):
         super().__init__()
         self.exc = exc
 
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+    def generate(
+        self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+    ) -> Generation:
         raise self.exc
 
 

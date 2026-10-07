@@ -144,8 +144,12 @@ class LanceChunkSearcher:
         return ranked([_to_chunk(r, "dense", 1.0 - r["_distance"]) for r in rows], "dense")
 
     def text_search(self, query: str, limit: int) -> list[RetrievedChunk]:
+        # Double quotes make a phrase query, which needs word positions the index does not
+        # store (LanceDB raises). Search the words instead; found by the agent eval, whose
+        # planner sometimes quotes titles, and reachable by any user typing quotes.
+        query = query.replace('"', " ").strip()
         table = self._open()
-        if table is None or not query.strip():
+        if table is None or not query:
             return []
         rows = table.search(query, query_type="fts").select(_RESULT_COLUMNS).limit(limit).to_list()
         return ranked([_to_chunk(r, "bm25", r["_score"]) for r in rows], "bm25")

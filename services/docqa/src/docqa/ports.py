@@ -73,7 +73,12 @@ class Generation(BaseModel):
 class Generator(Protocol):
     model_id: str
 
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation: ...
+    def generate(
+        self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+    ) -> Generation:
+        """json_mode: the caller expects one JSON object. Providers that can enforce it do
+        (Ollama); others rely on the prompt, and callers parse tolerantly."""
+        ...
 
 
 C = TypeVar("C")

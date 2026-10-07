@@ -78,7 +78,9 @@ def test_run_eval_is_strategy_major_and_scores_everything() -> None:
 
 def test_errors_are_recorded_not_raised() -> None:
     class Boom(FakeGenerator):
-        def generate(self, system: str, prompt: str, max_tokens: int):  # type: ignore[no-untyped-def]
+        def generate(  # type: ignore[no-untyped-def]
+            self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+        ):
             raise RuntimeError("quota")
 
     records = run_eval(qa(Boom()), ITEMS[:1], [Strategy.DENSE])
