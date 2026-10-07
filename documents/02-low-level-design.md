@@ -58,6 +58,10 @@ extemers/
 | `Cognito` / `CognitoAccountLevel` | `cognito-idp:*` / create and list pools | `userpool/*` in the region (pool IDs are generated, so they cannot be name-scoped) / `*` |
 | `SsmParameters` / `SsmDescribe` | `ssm:*` / `ssm:DescribeParameters` | `parameter/docqa/*` / `*` |
 | `Budgets` | `budgets:*` | `budget/docqa-*` |
+| `Dashboards` | `cloudwatch:PutDashboard`, `GetDashboard`, `DeleteDashboards` | `dashboard/docqa-*` |
+| `Alarms` | `cloudwatch:PutMetricAlarm`, `DeleteAlarms`, `DescribeAlarms`, tag actions | `alarm:docqa-*` in the region |
+| `AlarmTopics` | `sns:` create/delete/attributes, subscribe, tag actions | topics named `docqa-*` |
+| `AlarmSubscriptions` | `sns:GetSubscriptionAttributes`, `SetSubscriptionAttributes`, `Unsubscribe` | `*` (SNS has no resource-level permissions for these) |
 
 API Gateway and log-delivery permissions were removed with the calculator.
 

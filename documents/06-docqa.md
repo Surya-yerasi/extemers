@@ -11,8 +11,8 @@ It is built in phases, and this document grows with each one.
 | 3 | Ask page with retrieval strategies and citations | Deployed (answers wait for Bedrock access) |
 | 3b | Local mode: the same app on free Ollama models, documents kept on the laptop | Done |
 | 4 | Evaluation harness (retrieval metrics, RAGAS, latency, cost) | Done |
-| 5a | Conversations, follow-up questions, per-question traces (Traces tab), EMF metrics | **This PR** |
-| 5b | CloudWatch dashboard, alarms, email alerts | Next PR (needs a bootstrap update) |
+| 5a | Conversations, follow-up questions, per-question traces (Traces tab), EMF metrics | PR #11 |
+| 5b | CloudWatch dashboard, alarms, email alerts | **This PR** (needs a bootstrap update first) |
 | 6 | Agents (LangGraph), platform comparisons | Planned |
 
 ## Phase 1 architecture
@@ -406,6 +406,50 @@ metrics are switched off.
 | D-38 | **Save failed turns** | The trace of a failure is the most useful one | Discarding failures (only a log line would remain) |
 | D-39 | **EMF metrics with 2 dimensions** | No API calls, no IAM, free-tier; per-strategy detail via Logs Insights | Strategy as a dimension (4× the billed metrics) |
 | D-40 | **Unconditional `s3:ListBucket` for both Lambda roles** | A prefix condition does not cover the existence check S3 makes on a missing object, so S3 returned 403 instead of 404. Confirmed with the IAM policy simulator; it would have failed every new-document ingest and every first conversation. Lists names only; contents stay prefix-scoped | Keeping the condition and listing instead of `HeadObject` (third-party code such as LanceDB makes its own existence checks) |
+## Phase 5b: dashboard and alarms
+
+All deployed-only: they watch the Lambda functions in AWS, not local mode. Terraform module:
+`infra/modules/observability`. The URL is in `terraform output docqa_dashboard_url`.
+
+**Dashboard `docqa-dev`:**
+
+| Widget | Source |
+|---|---|
+| Web requests, 4xx, 5xx, throttles | `AWS/Lambda` Function URL metrics |
+| Time per question P50/P95; retrieval and generation P95 (with the alarm line) | App EMF metrics (`docqa` namespace) |
+| Model cost, not-found answers, model errors | App EMF metrics |
+| Lambda duration (web P95, ingest max), ingestion events and errors | `AWS/Lambda` |
+| Alarm states | The five alarms below |
+| Recent questions: trace ID, strategy, total and generation ms, cost, not found, rewritten | Logs Insights over `turn_completed` lines (no question text is logged) |
+| Model and provider errors; ingestion results and failures | Logs Insights over `ask_upstream_error`, `ingest_failed`, `document_indexed` |
+
+**Alarms** (email through SNS topic `docqa-dev-alarms` to `ALERT_EMAILS`; each address must
+click AWS's confirmation email once):
+
+| Alarm | Fires when | First step |
+|---|---|---|
+| `docqa-dev-web-5xx` | Any 5xx from the Function URL in 5 minutes (includes quota and provider failures) | Dashboard → *Model and provider errors*; open the trace ID in the app |
+| `docqa-dev-web-throttles` | Lambda throttled the web function | Account concurrency is 10: check for a burst |
+| `docqa-dev-ingest-errors` | An ingest invocation failed | Dashboard → *Ingestion results and failures* (doc ID, error code) |
+| `docqa-dev-model-errors` | A model call failed (throttling, access, timeout) | The `error_code` column; for `ThrottlingException`, check Bedrock quotas |
+| `docqa-dev-ask-latency-p95` | P95 time per question > 20 s over 15 minutes | Open a slow trace: which span dominates? |
+
+`treat_missing_data = notBreaching`: no traffic is not an alarm. All of this fits the free
+tier: 1 of 3 dashboards, 5 of 10 alarms, SNS email.
+
+**How the pieces connect.** An alarm email names the metric. The dashboard's log tables give
+the trace ID for that time. The app's Traces tab shows that question's timeline, with the
+failing step and its error. The trace also carries the X-Ray trace ID and Lambda request ID,
+for the platform view.
+
+### Phase 5b decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-41 | **Alarm on Function URL `Url5xxCount`, not Lambda `Errors`** | Behind the Web Adapter a 500 is a *successful* invocation, so Lambda `Errors` stays 0 for the web function | Lambda `Errors` (blind to app errors); `AWS_LWA_ERROR_STATUS_CODES` on the web function (would mark user-visible 503s as invocation failures and retry nothing) |
+| D-42 | **Alarm ARNs built from names in the dashboard** | The whole dashboard body is known at plan time, so a PR shows exactly what the dashboard will be | Resource attributes (the body shows as "known after apply") |
+| D-43 | **SNS topic without a customer-managed key** | Notifications carry alarm names and states only; CloudWatch can publish to a CMK-encrypted topic only after a key-policy change | Encrypting with the docqa key (bootstrap key-policy change for no data benefit) |
+| D-44 | **Deploy role scoped to `docqa-*` dashboards, alarms and topics** | Same pattern as every other service: CI can manage only this app's monitoring | `CloudWatchFullAccess` |
 
 ## Login flow
 

@@ -162,6 +162,13 @@ locals {
   "arn:aws:ssm:${var.region}:${local.account_id}:parameter/${trimsuffix(p, "-")}/*"]
   budget_arns = [for p in var.managed_name_prefixes :
   "arn:aws:budgets::${local.account_id}:budget/${p}*"]
+  dashboard_arns = [for p in var.managed_name_prefixes :
+  "arn:aws:cloudwatch::${local.account_id}:dashboard/${p}*"]
+  alarm_arns = [for p in var.managed_name_prefixes :
+  "arn:aws:cloudwatch:${var.region}:${local.account_id}:alarm:${p}*"]
+  # Matches topics and their subscriptions (<topic arn>:<subscription id>).
+  sns_arns = [for p in var.managed_name_prefixes :
+  "arn:aws:sns:${var.region}:${local.account_id}:${p}*"]
 }
 
 data "aws_iam_policy_document" "deploy" {
@@ -276,6 +283,40 @@ data "aws_iam_policy_document" "deploy" {
     sid       = "Budgets"
     actions   = ["budgets:*"]
     resources = local.budget_arns
+  }
+
+  statement {
+    sid       = "Dashboards"
+    actions   = ["cloudwatch:PutDashboard", "cloudwatch:GetDashboard", "cloudwatch:DeleteDashboards"]
+    resources = local.dashboard_arns
+  }
+
+  statement {
+    sid = "Alarms"
+    actions = [
+      "cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:DescribeAlarms",
+      "cloudwatch:TagResource", "cloudwatch:UntagResource", "cloudwatch:ListTagsForResource",
+    ]
+    resources = local.alarm_arns
+  }
+
+  statement {
+    sid = "AlarmTopics"
+    actions = [
+      "sns:CreateTopic", "sns:DeleteTopic", "sns:GetTopicAttributes", "sns:SetTopicAttributes",
+      "sns:Subscribe", "sns:ListSubscriptionsByTopic",
+      "sns:TagResource", "sns:UntagResource", "sns:ListTagsForResource",
+    ]
+    resources = local.sns_arns
+  }
+
+  # SNS does not support resource-level permissions for subscription actions: they are
+  # authorised against "*" only (found with simulate-principal-policy before the first apply).
+  # No data access: reading or removing an email subscription's settings.
+  statement {
+    sid       = "AlarmSubscriptions"
+    actions   = ["sns:GetSubscriptionAttributes", "sns:SetSubscriptionAttributes", "sns:Unsubscribe"]
+    resources = ["*"]
   }
 }
 

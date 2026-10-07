@@ -13,3 +13,7 @@ output "docqa_docs_bucket" {
 output "docqa_user_pool_id" {
   value = module.docqa_auth.user_pool_id
 }
+
+output "docqa_dashboard_url" {
+  value = module.docqa_observability.dashboard_url
+}
