@@ -60,7 +60,8 @@ extemers/
 | `Budgets` | `budgets:*` | `budget/docqa-*` |
 | `Dashboards` | `cloudwatch:PutDashboard`, `GetDashboard`, `DeleteDashboards` | `dashboard/docqa-*` |
 | `Alarms` | `cloudwatch:PutMetricAlarm`, `DeleteAlarms`, `DescribeAlarms`, tag actions | `alarm:docqa-*` in the region |
-| `AlarmTopics` | `sns:` create/delete/attributes, subscribe/unsubscribe, tag actions | topics and subscriptions named `docqa-*` |
+| `AlarmTopics` | `sns:` create/delete/attributes, subscribe, tag actions | topics named `docqa-*` |
+| `AlarmSubscriptions` | `sns:GetSubscriptionAttributes`, `SetSubscriptionAttributes`, `Unsubscribe` | `*` (SNS has no resource-level permissions for these) |
 
 API Gateway and log-delivery permissions were removed with the calculator.
 

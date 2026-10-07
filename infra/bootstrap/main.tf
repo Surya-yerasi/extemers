@@ -304,11 +304,19 @@ data "aws_iam_policy_document" "deploy" {
     sid = "AlarmTopics"
     actions = [
       "sns:CreateTopic", "sns:DeleteTopic", "sns:GetTopicAttributes", "sns:SetTopicAttributes",
-      "sns:Subscribe", "sns:Unsubscribe", "sns:ListSubscriptionsByTopic",
-      "sns:GetSubscriptionAttributes", "sns:SetSubscriptionAttributes",
+      "sns:Subscribe", "sns:ListSubscriptionsByTopic",
       "sns:TagResource", "sns:UntagResource", "sns:ListTagsForResource",
     ]
     resources = local.sns_arns
+  }
+
+  # SNS does not support resource-level permissions for subscription actions: they are
+  # authorised against "*" only (found with simulate-principal-policy before the first apply).
+  # No data access: reading or removing an email subscription's settings.
+  statement {
+    sid       = "AlarmSubscriptions"
+    actions   = ["sns:GetSubscriptionAttributes", "sns:SetSubscriptionAttributes", "sns:Unsubscribe"]
+    resources = ["*"]
   }
 }
 
