@@ -1,10 +1,11 @@
 """Interfaces the pipelines depend on. Adapters implement them; tests use in-memory fakes."""
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from docqa.domain.conversation import ConversationSummary
 from docqa.domain.models import Chunk, DocMetadata, ParsedDocument
 from docqa.domain.retrieval import RetrievedChunk
 
@@ -73,3 +74,15 @@ class Generator(Protocol):
     model_id: str
 
     def generate(self, system: str, prompt: str, max_tokens: int) -> Generation: ...
+
+
+C = TypeVar("C")
+
+
+class ConversationStore(Protocol[C]):
+    """Per-user conversation storage. Generic so ports.py need not import the pipeline."""
+
+    def list(self, owner: str) -> list[ConversationSummary]: ...
+    def get(self, owner: str, conversation_id: str) -> C | None: ...
+    def save(self, conversation: C) -> None: ...
+    def delete(self, owner: str, conversation_id: str) -> None: ...

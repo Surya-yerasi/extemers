@@ -7,13 +7,15 @@ import pytest
 from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
+from docqa.adapters.emf_metrics import EmfMetrics, NoopMetrics
 from docqa.config import AppConfig
-from docqa.pipelines.qa import QAService
+from docqa.pipelines.chat import ChatService
+from docqa.pipelines.qa import AskResult
 from docqa.ports import Generation, ModelUnavailableError
 from docqa.web.app import create_app
 from docqa.web.auth import OAUTH_COOKIE, SESSION_COOKIE, TokenVerifier
 from tests.conftest import CLIENT_ID, DOMAIN
-from tests.fakes import FakeEmbedder, FakeGenerator, FakeReranker, FakeSearcher, retrieved
+from tests.fakes import FakeGenerator, chat_service
 
 
 def start_login(client: TestClient) -> str:
@@ -134,45 +136,144 @@ def test_logout_clears_session_and_redirects_to_cognito(
 
 
 @pytest.fixture
-def qa_client(
-    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
-) -> tuple[TestClient, FakeGenerator]:
-    generator = FakeGenerator("GPA 3.86 [1].")
-    qa = QAService(
-        searcher=FakeSearcher(dense=[retrieved("a")], bm25=[retrieved("a")]),
-        embedder=FakeEmbedder(),
-        embedding_model_id="amazon.titan-embed-text-v2:0",
-        generator=generator,
-        reranker=FakeReranker(),
+def chat() -> ChatService:
+    return chat_service(FakeGenerator("GPA 3.86 [1]."))
+
+
+class RecordingMetrics:
+    def __init__(self) -> None:
+        self.turns: list[str] = []
+        self.errors: list[tuple[str, str]] = []
+
+    def turn(self, trace_id: str, result: AskResult) -> None:
+        self.turns.append(trace_id)
+
+    def model_error(self, trace_id: str, error_code: str) -> None:
+        self.errors.append((trace_id, error_code))
+
+
+@pytest.fixture
+def metrics() -> RecordingMetrics:
+    return RecordingMetrics()
+
+
+@pytest.fixture
+def api(
+    config: AppConfig,
+    verifier: TokenVerifier,
+    make_token: Callable[..., str],
+    chat: ChatService,
+    metrics: RecordingMetrics,
+) -> TestClient:
+    client = TestClient(
+        create_app(config, verifier, chat=chat, metrics=metrics), follow_redirects=False
     )
-    client = TestClient(create_app(config, verifier, qa=qa), follow_redirects=False)
     client.cookies.set(SESSION_COOKIE, make_token())
-    return client, generator
+    return client
 
 
-def test_ask_requires_login(client: TestClient) -> None:
-    response = client.post("/api/ask", json={"question": "gpa?"})
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/api/ask"),
+        ("get", "/api/conversations"),
+        ("get", "/api/conversations/c_0123456789abcdef"),
+        ("delete", "/api/conversations/c_0123456789abcdef"),
+        ("get", "/api/traces/c_0123456789abcdef.1"),
+    ],
+)
+def test_conversation_api_requires_login(client: TestClient, method: str, path: str) -> None:
+    response = getattr(client, method)(
+        path, **({"json": {"question": "q"}} if method == "post" else {})
+    )
     assert response.status_code == 401
 
 
-def test_ask_returns_answer_citations_and_debug(
-    qa_client: tuple[TestClient, FakeGenerator],
+def test_ask_starts_a_conversation_with_a_traced_turn(
+    api: TestClient, metrics: RecordingMetrics
 ) -> None:
-    client, _ = qa_client
-    response = client.post("/api/ask", json={"question": "gpa?", "strategy": "dense"})
+    response = api.post(
+        "/api/ask",
+        json={"question": "  gpa?  ", "strategy": "dense"},
+        headers={
+            "x-amzn-trace-id": "Root=1-abc",
+            "x-amzn-lambda-context": '{"request_id": "req-1"}',
+        },
+    )
     assert response.status_code == 200
     body = response.json()
-    assert body["answer"] == "GPA 3.86 [1]."
-    assert body["strategy"] == "dense"
-    assert body["citations"][0]["chunk_id"] == "a"
-    assert body["chunks"][0]["scores"] == {"dense": 0.9}
-    assert body["timings_ms"]["total"] >= 0
-    assert body["cost"]["usd"] > 0
+    conversation_id = body["conversation"]["conversation_id"]
+    assert body["conversation"]["title"] == "gpa?"
+    assert body["conversation"]["turns"] == 1
+    turn = body["turn"]
+    assert turn["turn_id"] == f"{conversation_id}.1"
+    assert turn["result"]["answer"] == "GPA 3.86 [1]."
+    assert turn["result"]["citations"][0]["chunk_id"] == "a"
+    assert turn["result"]["trace"] is None  # stored once, on the turn
+    trace = turn["trace"]
+    assert trace["trace_id"] == turn["turn_id"]
+    assert [s["name"] for s in trace["spans"]] == ["embed", "dense_search", "generate"]
+    assert trace["attributes"]["conversation_id"] == conversation_id
+    assert trace["attributes"]["xray_trace_id"] == "Root=1-abc"
+    assert trace["attributes"]["lambda_request_id"] == "req-1"
+    assert metrics.turns == [turn["turn_id"]]
 
 
-def test_ask_defaults_to_hybrid(qa_client: tuple[TestClient, FakeGenerator]) -> None:
-    client, _ = qa_client
-    assert client.post("/api/ask", json={"question": "gpa?"}).json()["strategy"] == "hybrid"
+def test_follow_up_is_rewritten_and_listed(api: TestClient, chat: ChatService) -> None:
+    first = api.post("/api/ask", json={"question": "What was my GPA?"}).json()
+    conversation_id = first["conversation"]["conversation_id"]
+    second = api.post(
+        "/api/ask", json={"question": "And for my master's?", "conversation_id": conversation_id}
+    ).json()
+    assert second["turn"]["turn_id"] == f"{conversation_id}.2"
+    assert second["turn"]["result"]["standalone_question"] == "What was my master's GPA?"
+    assert second["turn"]["trace"]["spans"][0]["name"] == "rewrite"
+
+    listed = api.get("/api/conversations").json()
+    assert [c["conversation_id"] for c in listed] == [conversation_id]
+    assert listed[0]["turns"] == 2
+    full = api.get(f"/api/conversations/{conversation_id}").json()
+    assert [t["question"] for t in full["turns"]] == ["What was my GPA?", "And for my master's?"]
+    trace = api.get(f"/api/traces/{conversation_id}.2").json()
+    assert trace["question"] == "And for my master's?"
+
+
+def test_conversations_are_private_to_their_owner(
+    api: TestClient, make_token: Callable[..., str]
+) -> None:
+    conversation_id = api.post("/api/ask", json={"question": "gpa?"}).json()["conversation"][
+        "conversation_id"
+    ]
+    api.cookies.set(SESSION_COOKIE, make_token(sub="someone-else"))
+    assert api.get("/api/conversations").json() == []
+    assert api.get(f"/api/conversations/{conversation_id}").status_code == 404
+    assert api.get(f"/api/traces/{conversation_id}.1").status_code == 404
+    assert api.delete(f"/api/conversations/{conversation_id}").status_code == 404
+    follow_up = {"question": "q", "conversation_id": conversation_id}
+    assert api.post("/api/ask", json=follow_up).status_code == 404
+
+
+def test_delete_conversation(api: TestClient) -> None:
+    conversation_id = api.post("/api/ask", json={"question": "gpa?"}).json()["conversation"][
+        "conversation_id"
+    ]
+    assert api.delete(f"/api/conversations/{conversation_id}").status_code == 204
+    assert api.get("/api/conversations").json() == []
+    assert api.get(f"/api/conversations/{conversation_id}").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/conversations/not-an-id",
+        "/api/conversations/c_0123456789abcdef",
+        "/api/traces/c_0123456789abcdef.1",
+        "/api/traces/c_0123456789abcdef",
+        "/api/traces/..%2F..%2Fsecret",
+    ],
+)
+def test_unknown_or_malformed_ids_are_404(api: TestClient, path: str) -> None:
+    assert api.get(path).status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -182,88 +283,145 @@ def test_ask_defaults_to_hybrid(qa_client: tuple[TestClient, FakeGenerator]) -> 
         {"question": "x" * 1001},
         {"question": "gpa", "strategy": "magic"},
         {},
+        {"question": "gpa", "conversation_id": "x" * 65},
     ],
 )
-def test_ask_validates_input(
-    qa_client: tuple[TestClient, FakeGenerator], payload: dict[str, Any]
-) -> None:
-    client, generator = qa_client
-    assert client.post("/api/ask", json=payload).status_code == 422
-    assert generator.prompts == []
+def test_ask_validates_input(api: TestClient, chat: ChatService, payload: dict[str, Any]) -> None:
+    assert api.post("/api/ask", json=payload).status_code == 422
+    assert api.get("/api/conversations").json() == []
 
 
-def test_ask_whitespace_question_is_rejected(qa_client: tuple[TestClient, FakeGenerator]) -> None:
-    client, _ = qa_client
-    response = client.post("/api/ask", json={"question": "   "})
+def test_whitespace_question_is_rejected_without_a_turn(api: TestClient) -> None:
+    response = api.post("/api/ask", json={"question": "   "})
     assert response.status_code == 422
     assert response.json() == {"detail": "question is empty"}
+    assert api.get("/api/conversations").json() == []
 
 
-class RaisingGenerator(FakeGenerator):
-    def __init__(self, code: str) -> None:
+def test_full_conversation_is_rejected(api: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("docqa.pipelines.chat.MAX_TURNS", 1)
+    conversation_id = api.post("/api/ask", json={"question": "a"}).json()["conversation"][
+        "conversation_id"
+    ]
+    response = api.post("/api/ask", json={"question": "b", "conversation_id": conversation_id})
+    assert response.status_code == 409
+
+
+class FailingGenerator(FakeGenerator):
+    def __init__(self, exc: Exception) -> None:
         super().__init__()
-        self.code = code
+        self.exc = exc
 
     def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
-        raise ClientError({"Error": {"Code": self.code, "Message": "no"}}, "Converse")
+        raise self.exc
 
 
 @pytest.mark.parametrize(
-    ("code", "status", "detail"),
+    ("exc", "status", "detail", "code"),
     [
-        ("ThrottlingException", 503, "model quota reached; try again later"),
-        ("AccessDeniedException", 502, "upstream service error"),
+        (
+            ClientError({"Error": {"Code": "ThrottlingException", "Message": "x"}}, "Converse"),
+            503,
+            "model quota reached; try again later",
+            "ThrottlingException",
+        ),
+        (
+            ClientError({"Error": {"Code": "AccessDeniedException", "Message": "x"}}, "Converse"),
+            502,
+            "upstream service error",
+            "AccessDeniedException",
+        ),
+        (
+            ModelUnavailableError("Ollama model qwen2.5:7b is missing (ollama pull qwen2.5:7b)"),
+            503,
+            "Ollama model qwen2.5:7b is missing (ollama pull qwen2.5:7b)",
+            "ModelUnavailable",
+        ),
+        (httpx.ConnectTimeout("slow"), 502, "model service error", "ConnectTimeout"),
     ],
 )
-def test_ask_maps_bedrock_errors(
-    qa_client: tuple[TestClient, FakeGenerator], code: str, status: int, detail: str
+def test_model_failures_are_mapped_saved_and_traced(  # noqa: PLR0913, PLR0917
+    config: AppConfig,
+    verifier: TokenVerifier,
+    make_token: Callable[..., str],
+    metrics: RecordingMetrics,
+    exc: Exception,
+    status: int,
+    detail: str,
+    code: str,
 ) -> None:
-    client, _ = qa_client
-    client.app.state.qa._generator = RaisingGenerator(code)  # type: ignore[attr-defined]
+    app = create_app(config, verifier, chat=chat_service(FailingGenerator(exc)), metrics=metrics)
+    client = TestClient(app)
+    client.cookies.set(SESSION_COOKIE, make_token())
     response = client.post("/api/ask", json={"question": "gpa?"})
     assert response.status_code == status
     assert response.json() == {"detail": detail}
+    trace_id = response.headers["x-docqa-trace-id"]
+    assert metrics.errors == [(trace_id, code)]
+    failed = client.get(f"/api/traces/{trace_id}").json()
+    assert failed["result"] is None
+    assert failed["error"].startswith(type(exc).__name__)
+    generate = failed["trace"]["spans"][-1]
+    assert (generate["name"], generate["status"]) == ("generate", "error")
 
 
-def test_ask_builds_service_lazily_from_config(
+def test_unexpected_errors_are_not_swallowed(
+    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
+) -> None:
+    app = create_app(config, verifier, chat=chat_service(FailingGenerator(KeyError("bug"))))
+    client = TestClient(app, raise_server_exceptions=False)
+    client.cookies.set(SESSION_COOKIE, make_token())
+    assert client.post("/api/ask", json={"question": "gpa?"}).status_code == 500
+
+
+def test_chat_service_is_built_lazily_from_config(
     config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
 ) -> None:
     app = create_app(config, verifier)
-    built: list[str] = []
-    qa = QAService(
-        searcher=FakeSearcher(),
-        embedder=FakeEmbedder(),
-        embedding_model_id="e",
-        generator=FakeGenerator(),
-        reranker=FakeReranker(),
-    )
+    built: list[str | None] = []
 
-    def factory(bucket: str) -> QAService:
+    def factory(bucket: str | None) -> ChatService:
         built.append(bucket)
-        return qa
+        return chat_service()
 
-    app.state.qa_factory = factory
+    app.state.chat_factory = factory
     client = TestClient(app)
     client.cookies.set(SESSION_COOKIE, make_token())
     assert client.get("/health").status_code == 200
     assert built == []  # not built for health checks
     client.post("/api/ask", json={"question": "q"})
-    client.post("/api/ask", json={"question": "q"})
+    client.get("/api/conversations")
     assert built == ["docqa-test-bucket"]  # built once
 
 
-def test_ask_without_bucket_is_unavailable(
+def test_unavailable_index_is_503(
     config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
 ) -> None:
-    client = TestClient(create_app(config.model_copy(update={"docs_bucket": None}), verifier))
+    app = create_app(config, verifier)
+
+    def factory(bucket: str | None) -> ChatService:
+        raise ValueError("a documents bucket is required")
+
+    app.state.chat_factory = factory
+    client = TestClient(app)
     client.cookies.set(SESSION_COOKIE, make_token())
-    assert client.post("/api/ask", json={"question": "q"}).status_code == 503
+    assert client.get("/api/conversations").status_code == 503
 
 
-def test_index_renders_ask_form(client: TestClient, make_token: Callable[..., str]) -> None:
+def test_metrics_default_to_emf_only_in_lambda(
+    config: AppConfig, verifier: TokenVerifier, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    assert isinstance(create_app(config, verifier).state.metrics, NoopMetrics)
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "docqa-dev-web")
+    assert isinstance(create_app(config, verifier).state.metrics, EmfMetrics)
+
+
+def test_index_renders_chat_and_traces(client: TestClient, make_token: Callable[..., str]) -> None:
     client.cookies.set(SESSION_COOKIE, make_token())
     page = client.get("/").text
-    assert 'id="ask-form"' in page
+    for marker in ('id="composer"', 'id="conversation-list"', 'id="view-traces"', 'id="waterfall"'):
+        assert marker in page
     assert '<option value="hybrid" selected>' in page
     assert 'value="hybrid_rerank"' in page
     assert '<script src="/static/app.js"' in page
@@ -273,38 +431,4 @@ def test_static_assets_are_served(client: TestClient) -> None:
     response = client.get("/static/app.js")
     assert response.status_code == 200
     assert "textContent" in response.text
-    assert "innerHTML" not in response.text.replace("never innerHTML", "")
-
-
-class UnavailableGenerator(FakeGenerator):
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
-        raise ModelUnavailableError("Ollama model qwen2.5:7b is missing (ollama pull qwen2.5:7b)")
-
-
-class BrokenGenerator(FakeGenerator):
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
-        raise httpx.ConnectTimeout("slow")
-
-
-@pytest.mark.parametrize(
-    ("generator", "status", "detail"),
-    [
-        (
-            UnavailableGenerator(),
-            503,
-            "Ollama model qwen2.5:7b is missing (ollama pull qwen2.5:7b)",
-        ),
-        (BrokenGenerator(), 502, "model service error"),
-    ],
-)
-def test_ask_maps_local_model_errors(
-    qa_client: tuple[TestClient, FakeGenerator],
-    generator: FakeGenerator,
-    status: int,
-    detail: str,
-) -> None:
-    client, _ = qa_client
-    client.app.state.qa._generator = generator  # type: ignore[attr-defined]
-    response = client.post("/api/ask", json={"question": "gpa?"})
-    assert response.status_code == status
-    assert response.json() == {"detail": detail}
+    assert ".innerHTML" not in response.text

@@ -1,7 +1,10 @@
 from typing import Any
 
+import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
+from docqa.domain.models import doc_id_for
 from docqa.ingest_app import create_app, s3_records
 from docqa.pipelines.ingest import IngestResult, Outcome
 
@@ -53,3 +56,55 @@ def test_health() -> None:
 def test_web_app_has_no_events_route(client: TestClient) -> None:
     """/events must never be reachable through the public Function URL."""
     assert client.post("/events", json={}).status_code in {404, 405}
+
+
+def test_failures_are_logged_with_the_doc_id_and_fail_the_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    class RecordingLogger:
+        def exception(self, message: str, extra: dict[str, Any]) -> None:
+            logged.append((message, extra))
+
+        def info(self, message: str, extra: dict[str, Any]) -> None:
+            pass
+
+    class Denied(RecordingService):
+        def ingest(self, key: str) -> IngestResult:
+            error = {"Error": {"Code": "AccessDenied", "Message": "Forbidden"}}
+            raise ClientError(error, "HeadObject")  # type: ignore[arg-type]
+
+    monkeypatch.setattr("docqa.ingest_app.logger", RecordingLogger())
+    client = TestClient(create_app(Denied()), raise_server_exceptions=False)  # type: ignore[arg-type]
+    response = client.post("/events", json=s3_event(("ObjectCreated:Put", "raw/secret name.pdf")))
+    assert response.status_code == 500  # => failed invocation => S3 retries
+    assert logged == [
+        (
+            "ingest_failed",
+            {
+                "doc_id": doc_id_for("raw/secret name.pdf"),  # never the file name
+                "error": "ClientError",
+                "error_code": "AccessDenied",
+            },
+        )
+    ]
+
+
+def test_service_is_built_on_the_first_event_not_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built: list[str] = []
+
+    def build(settings: object) -> RecordingService:
+        built.append("built")
+        return RecordingService()
+
+    monkeypatch.setenv("DOCQA_DOCS_BUCKET", "bucket")
+    monkeypatch.setattr("docqa.pipelines.wiring.build_ingest_service", build)
+    client = TestClient(create_app())
+    assert client.get("/health").status_code == 200
+    assert built == []
+    client.post("/events", json=s3_event(("ObjectCreated:Put", "raw/a.pdf")))
+    client.post("/events", json=s3_event(("ObjectCreated:Put", "raw/b.pdf")))
+    assert built == ["built"]

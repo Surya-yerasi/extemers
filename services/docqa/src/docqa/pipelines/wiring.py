@@ -12,6 +12,7 @@ from docqa.adapters.bedrock import (
     TitanEmbedder,
     bedrock_runtime,
 )
+from docqa.adapters.conversation_store import BlobConversationStore
 from docqa.adapters.lancedb_index import LanceChunkIndex, LanceChunkSearcher
 from docqa.adapters.local_blobs import LocalBlobStore
 from docqa.adapters.ollama import (
@@ -25,6 +26,7 @@ from docqa.adapters.ollama import (
 from docqa.adapters.s3_blobs import S3BlobStore
 from docqa.config import IngestSettings, Provider, QASettings
 from docqa.domain.chunking import ChunkingConfig
+from docqa.pipelines.chat import ChatService
 from docqa.pipelines.ingest import IngestService
 from docqa.pipelines.qa import QAService
 
@@ -88,3 +90,14 @@ def build_qa_service(settings: QASettings, docs_bucket: str | None) -> QAService
         reranker=CohereReranker(settings.rerank_model_id, runtime),
         **limits,
     )
+
+
+def build_chat_service(settings: QASettings, docs_bucket: str | None) -> ChatService:
+    """Conversations live next to the documents: local files, or the encrypted bucket."""
+    if settings.provider is Provider.LOCAL:
+        blobs: LocalBlobStore | S3BlobStore = LocalBlobStore(settings.local_data_dir)
+    elif docs_bucket:
+        blobs = S3BlobStore(docs_bucket)
+    else:
+        raise ValueError("a documents bucket is required with the bedrock provider")
+    return ChatService(build_qa_service(settings, docs_bucket), BlobConversationStore(blobs))
