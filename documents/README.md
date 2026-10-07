@@ -31,6 +31,7 @@ and run `make docs-diagrams` (Docker) to regenerate.
 | [08-docqa-ingestion](diagrams/08-docqa-ingestion.png) | docqa ingestion pipeline |
 | [09-docqa-ask](diagrams/09-docqa-ask.png) | docqa question answering: strategies, fusion, rerank, cited answer |
 | [10-docqa-evals](diagrams/10-docqa-evals.png) | docqa evaluation harness: corpus, golden set, metrics, CI gate |
+| [11-docqa-agent](diagrams/11-docqa-agent.png) | docqa agent strategy: the LangGraph plan → retrieve → grade → generate → verify loop |
 
 ## History
 

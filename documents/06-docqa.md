@@ -13,7 +13,7 @@ It is built in phases, and this document grows with each one.
 | 4 | Evaluation harness (retrieval metrics, RAGAS, latency, cost) | Done |
 | 5a | Conversations, follow-up questions, per-question traces (Traces tab), EMF metrics | PR #11 |
 | 5b | CloudWatch dashboard, alarms, email alerts | **This PR** (needs a bootstrap update first) |
-| 6 | Agents (LangGraph), platform comparisons | Planned |
+| 6 | Agent strategy (LangGraph): plan, grade, retry, verify | **This PR** |
 
 ## Phase 1 architecture
 
@@ -450,6 +450,93 @@ for the platform view.
 | D-42 | **Alarm ARNs built from names in the dashboard** | The whole dashboard body is known at plan time, so a PR shows exactly what the dashboard will be | Resource attributes (the body shows as "known after apply") |
 | D-43 | **SNS topic without a customer-managed key** | Notifications carry alarm names and states only; CloudWatch can publish to a CMK-encrypted topic only after a key-policy change | Encrypting with the docqa key (bootstrap key-policy change for no data benefit) |
 | D-44 | **Deploy role scoped to `docqa-*` dashboards, alarms and topics** | Same pattern as every other service: CI can manage only this app's monitoring | `CloudWatchFullAccess` |
+
+## Phase 6: the agent strategy
+
+![docqa agent](diagrams/11-docqa-agent.png)
+
+<sub>Source: [diagrams/11-docqa-agent.mmd](diagrams/11-docqa-agent.mmd). It follows the compiled
+graph (`AgentRunner.mermaid()`), with edge labels added.</sub>
+
+`agent` is a fifth retrieval strategy in the dropdown. It runs everywhere the others do: chat,
+follow-ups, traces, metrics and the eval harness. Instead of one fixed search, a small LangGraph
+state machine decides what to do next:
+
+| Step | What it does | Model call |
+|---|---|---|
+| **plan** | Keeps the original question and adds 1-3 search queries, one per fact needed (e.g. "salary offer letter", "current salary"), in the documents' own words ("paid time off", not "vacation") | JSON |
+| **retrieve** | Hybrid search for each new query; RRF across queries and earlier rounds; top 5 | embeddings only |
+| **grade** | "Do these sources state every fact needed?" If not, names the gap and writes a better query; at most one corrective round (`DOCQA_AGENT_MAX_RETRIEVALS=2`). Asked even when nothing was found, because that is when rewording helps most | JSON |
+| **generate** | The same grounded prompt as every other strategy: cite `[n]` or `NOT_FOUND` | text |
+| **verify** (optional) | "Is every claim stated by a source?" One regeneration with the unsupported claim named. Off by default (no measured gain); `DOCQA_AGENT_VERIFY=true` | JSON |
+
+**Design points:**
+- **LangGraph only routes.** Model calls go through the `Generator` port and searches through
+  `QAService.retrieve`, so Bedrock/Ollama, cost tracking and tracing are shared with every
+  strategy. JSON decisions use Ollama's JSON mode locally. Converse has none, so on Bedrock the
+  prompts ask for JSON and the parsers are tolerant.
+- **Safe defaults.** A malformed decision falls back to: search the original question; treat
+  results as sufficient; treat the answer as supported. A weak model cannot loop, and the
+  graph is bounded at 2 search rounds and 1 regeneration (at most 6 model calls).
+- **Traced step by step.** Agent steps are top-level spans with their decisions as attributes
+  (queries, `sufficient`, `missing`, the retry query, `supported`). Their searches nest one level
+  below (`depth`), shown indented in the Traces tab.
+- **Lazy.** LangGraph is imported only when the agent strategy is used (0.8 s locally,
+  0.25 s in the image). It adds 14 MB to the image (227 → 241 MB).
+
+### Phase 6 results
+
+Local mode (bge-m3 + qwen2.5:7b), 49 golden questions, 2026-10-07. Every agent row ran
+after the quote fix (see below):
+
+| Strategy | hit@1 | MRR | Correct | Table lookups | Total P50 / P95 |
+|---|---|---|---|---|---|
+| hybrid (Phase 3 default) | 0.860 | 0.924 | 0.959 | 0.75 | 2.6 s / 3.8 s |
+| agent: plan + one search round (+ verify) | 0.907 | 0.950 | 0.959 | 0.75 | 4.9 s / 8.4 s |
+| **agent: plan + corrective round** (default) | **0.930** | **0.957** | **0.980** | **0.88** | **4.0 s / 7.4 s** |
+| agent: plan + corrective round + verify | 0.930 | 0.957 | 0.980 | 0.88 | 4.7 s / 9.2 s |
+
+**What the ablation shows:**
+- **Planning improves ranking.** The right passage is ranked first more often (hit@1 0.86 → 0.91),
+  but on its own it does not change the answers.
+- **The corrective round is what turns better retrieval into better answers.** Table
+  lookups went from 0.75 to 0.88. These are the look-alike transcript questions, where the
+  grader noticed the wrong transcript and searched again.
+- **Verify added time and changed no answer** on this set, so it is off by default
+  (`DOCQA_AGENT_VERIFY=true` turns it on). It may matter with a different model, or with
+  questions that tempt the model to add facts.
+- **The cost is time:** 1.5-2× the latency of hybrid locally (3-5 model calls instead of 1).
+  On Bedrock with Nova Micro that is about 3-4 extra calls of a few hundred tokens each
+  (fractions of a cent).
+
+**Reading it honestly:** on answers, the agent beats hybrid by **one question** (48 vs 47 of
+49), within the noise limit set in Phase 4. On retrieval it is 3 questions better at rank 1
+(of 43). It is a real but modest gain on an easy, 15-document corpus. A larger private
+golden set over your real documents is the way to decide whether it should become the
+default. Until then the default stays **hybrid**: faster, nearly as good.
+
+**Bug found by the agent's eval:** the planner sometimes quotes a title
+(`"Predicting River Flooding"`). LanceDB parses quotes as a phrase query, which needs word
+positions the BM25 index does not store, so it raised an error. Any user typing quotes with
+BM25 or hybrid would have hit the same error. Quotes are now stripped before full-text search
+(the words are still matched), with a regression test.
+
+### Phase 6 decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-45 | **LangGraph for control flow only; our ports for model calls** | The graph stays readable and testable (a scripted fake model drives every branch), and providers, costs and traces stay uniform across strategies | LangChain chat-model wrappers inside the graph (a second model abstraction, untraced); a hand-written loop (works, but LangGraph is the target for later multi-agent work and exports its own diagram) |
+| D-46 | **The agent is a strategy, not a separate endpoint** | The chat, follow-ups, traces, metrics and the eval harness all apply unchanged, so the comparison with the fixed strategies is like for like | A separate `/api/agent` |
+| D-47 | **The original question is always the first query** | The plan can only add to the baseline search, never replace it with a worse one | Planned queries only |
+| D-48 | **Bounded loops with safe fallbacks** | Predictable cost and latency (at most 2 rounds, 1 regeneration, 6 calls); bad JSON never loops | Unbounded "until sufficient" |
+| D-49 | **Grade even with no results; empty results are never sufficient** | Found by the tests: skipping the model there meant no corrective query exactly when it was most needed | Short-circuiting to "not found" |
+| D-50 | **Agent settings are environment switches** | `DOCQA_AGENT_VERIFY` and `DOCQA_AGENT_MAX_RETRIEVALS` make ablations a one-line eval run | Code changes per experiment |
+| D-51 | **Verify off by default; hybrid stays the page default** | Measured: verify changed no answer and added 0.7 s at P50; the agent's answer gain over hybrid (1 question in 49) is within noise | Shipping every step because it sounds rigorous; making the slower agent the default before a larger eval |
+
+**Run it:** pick *Agent* in the dropdown, or `make docqa-local-eval STRATEGIES=hybrid,agent`
+(about 8 minutes locally). For the ablations:
+`DOCQA_AGENT_VERIFY=true make docqa-local-eval STRATEGIES=agent` and
+`DOCQA_AGENT_MAX_RETRIEVALS=1 make docqa-local-eval STRATEGIES=agent`.
 
 ## Login flow
 

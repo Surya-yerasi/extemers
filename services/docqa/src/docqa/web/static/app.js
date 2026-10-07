@@ -404,7 +404,10 @@ function renderWaterfall(trace) {
     bar.style.left = `${(span.start_ms / total) * 100}%`;
     bar.style.width = `max(2px, ${(span.duration_ms / total) * 100}%)`;
     track.append(bar);
-    summary.append(el("span", span.name, "name mono"), track, el("span", ms(span.duration_ms), "dur mono"));
+    const name = el("span", span.name, "name mono");
+    name.style.paddingLeft = `${(span.depth || 0) * 0.9}rem`; // nested steps, e.g. an agent's searches
+    summary.append(name, track, el("span", ms(span.duration_ms), "dur mono"));
+    if (span.depth) details.classList.add("nested");
     details.append(summary);
     const attrs = { ...span.attributes };
     if (span.error) attrs.error = span.error;

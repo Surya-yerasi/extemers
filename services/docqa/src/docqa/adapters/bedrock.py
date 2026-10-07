@@ -115,7 +115,10 @@ class BedrockGenerator:
         self.model_id = model_id
         self._client = client or bedrock_runtime()
 
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+    def generate(
+        self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+    ) -> Generation:
+        # Converse has no JSON mode; the agent's prompts ask for JSON and parse tolerantly.
         response = self._client.converse(
             modelId=self.model_id,
             system=[{"text": system}],

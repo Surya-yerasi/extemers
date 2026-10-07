@@ -43,7 +43,9 @@ def test_failed_turns_are_saved_and_skipped_in_history() -> None:
     class Flaky(FakeGenerator):
         fail = True
 
-        def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+        def generate(
+            self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+        ) -> Generation:
             if self.fail:
                 raise RuntimeError("quota")
             return super().generate(system, prompt, max_tokens)

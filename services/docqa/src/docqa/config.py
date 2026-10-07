@@ -138,3 +138,5 @@ class QASettings(IndexSettings):
     candidates: int = 20  # per retriever, before fusion/rerank
     top_k: int = 5  # chunks given to the model
     max_answer_tokens: int = 600
+    agent_max_retrievals: int = 2  # search rounds for the agent strategy
+    agent_verify: bool = False  # agent re-checks its answer (no measured gain; see Phase 6)

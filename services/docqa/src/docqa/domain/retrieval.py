@@ -13,6 +13,7 @@ class Strategy(StrEnum):
     BM25 = "bm25"  # keyword (full-text) only
     HYBRID = "hybrid"  # dense + BM25, fused with reciprocal rank fusion
     HYBRID_RERANK = "hybrid_rerank"  # hybrid candidates re-ordered by a cross-encoder
+    AGENT = "agent"  # plan queries, retrieve (hybrid), grade, retry, generate, verify
 
 
 class RetrievedChunk(BaseModel):

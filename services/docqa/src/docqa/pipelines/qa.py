@@ -7,10 +7,11 @@ without paying for generation.
 
 import secrets
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from docqa.domain.agent import AgentConfig
 from docqa.domain.answering import (
     NOT_FOUND_MESSAGE,
     SYSTEM_PROMPT,
@@ -28,6 +29,9 @@ from docqa.domain.costs import CostEstimate, rerank_cost, token_cost
 from docqa.domain.retrieval import RetrievedChunk, Strategy, rrf_fuse
 from docqa.domain.tracing import Trace, Tracer
 from docqa.ports import ChunkSearcher, Embedder, Generator, Reranker
+
+if TYPE_CHECKING:
+    from docqa.pipelines.agent import AgentRunner
 
 MAX_QUESTION_CHARS = 1000
 REWRITE_MAX_TOKENS = 120
@@ -84,6 +88,7 @@ class QAService:
         candidates: int = 20,
         top_k: int = 5,
         max_answer_tokens: int = 600,
+        agent_config: AgentConfig | None = None,
     ) -> None:
         self._searcher = searcher
         self._embedder = embedder
@@ -93,12 +98,32 @@ class QAService:
         self._candidates = candidates
         self._top_k = top_k
         self._max_answer_tokens = max_answer_tokens
+        self._agent_config = agent_config
+        self._agent_runner: AgentRunner | None = None
+
+    def _agent(self) -> "AgentRunner":
+        """Built on first use: LangGraph adds ~0.8 s of imports the other strategies skip."""
+        if self._agent_runner is None:
+            from docqa.pipelines.agent import AgentRunner  # noqa: PLC0415
+
+            config = self._agent_config or AgentConfig(top_k=self._top_k)
+            self._agent_runner = AgentRunner(self.retrieve, self._generator, config)
+        return self._agent_runner
 
     def retrieve(
         self, question: str, strategy: Strategy, tracer: Tracer | None = None
     ) -> Retrieval:
         question = validate_question(question)
         tracer = tracer or Tracer(f"r_{secrets.token_hex(8)}")
+        if strategy == Strategy.AGENT:  # retrieval only: plan, retrieve, grade, maybe retry
+            outcome = self._agent().run(question, tracer, answer=False)
+            return Retrieval(
+                strategy=strategy,
+                chunks=outcome.chunks,
+                timings_ms=tracer.finish().timings_ms,
+                tokens=outcome.tokens,
+                cost=outcome.cost,
+            )
         tokens: dict[str, int] = {}
         cost = CostEstimate()
         dense: list[RetrievedChunk] = []
@@ -187,6 +212,20 @@ class QAService:
             tokens["rewrite_output"] = rewrite.output_tokens
             cost = cost.add(rewrite_cost)
 
+        if strategy == Strategy.AGENT:
+            outcome = self._agent().run(standalone, tracer, answer=True)
+            if outcome.answer is None:  # cannot happen with answer=True
+                raise RuntimeError("agent returned no answer")
+            tokens.update(outcome.tokens)
+            cost = cost.add(outcome.cost)
+            chunks = outcome.chunks
+            answer, not_found = outcome.answer.text, outcome.answer.not_found
+            citations = outcome.answer.citations
+            tracer.set(agent_queries=outcome.queries)
+            return self._result(
+                strategy, answer, not_found, citations, chunks, tokens, cost, standalone, tracer
+            )
+
         retrieval = self.retrieve(standalone, strategy, tracer)
         tokens.update(retrieval.tokens)
         cost = cost.add(retrieval.cost)
@@ -218,6 +257,30 @@ class QAService:
         else:  # nothing indexed or nothing matched: do not pay for a model call
             answer, not_found, citations = NOT_FOUND_MESSAGE, True, []
 
+        return self._result(
+            strategy,
+            answer,
+            not_found,
+            citations,
+            retrieval.chunks,
+            tokens,
+            cost,
+            standalone,
+            tracer,
+        )
+
+    def _result(  # noqa: PLR0913, PLR0917 - assembles every field of the result
+        self,
+        strategy: Strategy,
+        answer: str,
+        not_found: bool,
+        citations: list[Citation],
+        chunks: list[RetrievedChunk],
+        tokens: dict[str, int],
+        cost: CostEstimate,
+        standalone: str,
+        tracer: Tracer,
+    ) -> AskResult:
         models = {"embedding": self._embedding_model_id, "generation": self._generator.model_id}
         if strategy == Strategy.HYBRID_RERANK:
             models["rerank"] = self._reranker.model_id
@@ -228,7 +291,7 @@ class QAService:
             answer=answer,
             not_found=not_found,
             citations=citations,
-            chunks=retrieval.chunks,
+            chunks=chunks,
             timings_ms={**trace.timings_ms, "total": trace.duration_ms},
             tokens=tokens,
             cost=cost,

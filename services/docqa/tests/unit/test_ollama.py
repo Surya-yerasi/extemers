@@ -117,3 +117,10 @@ def test_local_models_cost_nothing() -> None:
         "unpriced_models": [],
     }
     assert rerank_cost(PassthroughReranker.model_id).usd == 0
+
+
+def test_generator_json_mode_asks_ollama_for_json() -> None:
+    sent: list[dict[str, Any]] = []
+    client = client_with(chat_reply('{"queries": []}'), sent)
+    OllamaGenerator(client, "qwen2.5:7b").generate("s", "p", 50, json_mode=True)
+    assert sent[0]["format"] == "json"

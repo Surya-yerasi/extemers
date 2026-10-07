@@ -4,6 +4,8 @@ The provider setting picks the adapters: Bedrock + S3 when deployed, Ollama + lo
 local mode. The pipelines themselves do not know which one they run on.
 """
 
+from typing import Any
+
 from docqa.adapters.bedrock import (
     BedrockGenerator,
     BedrockMetadataExtractor,
@@ -25,6 +27,7 @@ from docqa.adapters.ollama import (
 )
 from docqa.adapters.s3_blobs import S3BlobStore
 from docqa.config import IngestSettings, Provider, QASettings
+from docqa.domain.agent import AgentConfig
 from docqa.domain.chunking import ChunkingConfig
 from docqa.pipelines.chat import ChatService
 from docqa.pipelines.ingest import IngestService
@@ -63,10 +66,15 @@ def build_ingest_service(settings: IngestSettings) -> IngestService:
 
 def build_qa_service(settings: QASettings, docs_bucket: str | None) -> QAService:
     searcher = LanceChunkSearcher(settings.lancedb_uri_for(docs_bucket), settings.index_table)
-    limits = {
+    limits: dict[str, Any] = {
         "candidates": settings.candidates,
         "top_k": settings.top_k,
         "max_answer_tokens": settings.max_answer_tokens,
+        "agent_config": AgentConfig(
+            max_retrievals=settings.agent_max_retrievals,
+            verify=settings.agent_verify,
+            top_k=settings.top_k,
+        ),
     }
     if settings.provider is Provider.LOCAL:
         client = OllamaClient(settings.ollama_url)

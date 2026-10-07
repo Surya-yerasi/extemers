@@ -61,7 +61,11 @@ class FakeEmbedder:
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         self.texts.extend(texts)
-        return [[float((hash(t) >> i) & 1) for i in range(self.dimensions)] for t in texts]
+        # First component fixed at 1.0: an all-zero vector (1 in 256 hashes) has no cosine
+        # similarity, so LanceDB would silently drop that chunk and tests would flake.
+        return [
+            [1.0, *(float((hash(t) >> i) & 1) for i in range(self.dimensions - 1))] for t in texts
+        ]
 
 
 class MemoryIndex:
@@ -129,7 +133,9 @@ class FakeGenerator:
         self.prompts: list[str] = []
         self.rewrite_prompts: list[str] = []
 
-    def generate(self, system: str, prompt: str, max_tokens: int) -> Generation:
+    def generate(
+        self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
+    ) -> Generation:
         if system == REWRITE_SYSTEM:
             self.rewrite_prompts.append(prompt)
             return Generation(text=self.rewrite, input_tokens=200, output_tokens=12)
