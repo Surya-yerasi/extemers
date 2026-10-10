@@ -128,6 +128,7 @@ def _eval(args: argparse.Namespace, settings: IngestSettings) -> int:
         json.dumps([s.model_dump(mode="json") for s in summaries], indent=2)
     )
     (out / "report.md").write_text(report)
+    (out / "meta.json").write_text(json.dumps(meta, indent=2))  # read by the Metrics tab
     print(report)
     print(f"Results: {out}", file=sys.stderr)
     return 1 if any(r.error for r in records) else 0

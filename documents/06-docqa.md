@@ -13,7 +13,8 @@ It is built in phases, and this document grows with each one.
 | 4 | Evaluation harness (retrieval metrics, RAGAS, latency, cost) | Done |
 | 5a | Conversations, follow-up questions, per-question traces (Traces tab), EMF metrics | PR #11 |
 | 5b | CloudWatch dashboard, alarms, email alerts | **This PR** (needs a bootstrap update first) |
-| 6 | Agent strategy (LangGraph): plan, grade, retry, verify | **This PR** |
+| 6 | Agent strategy (LangGraph): plan, grade, retry, verify | Done |
+| 7 | Metrics tab: live (online) and offline metrics, 👍/👎 feedback, metric guide | **This PR** |
 
 ## Phase 1 architecture
 
@@ -537,6 +538,33 @@ BM25 or hybrid would have hit the same error. Quotes are now stripped before ful
 (about 8 minutes locally). For the ablations:
 `DOCQA_AGENT_VERIFY=true make docqa-local-eval STRATEGIES=agent` and
 `DOCQA_AGENT_MAX_RETRIEVALS=1 make docqa-local-eval STRATEGIES=agent`.
+
+## Phase 7: the Metrics tab
+
+A third tab, **Metrics**, built from data the app already keeps. The concepts are in
+[07-ai-metrics.md](07-ai-metrics.md).
+
+| View | Source | Shows |
+|---|---|---|
+| **Live traffic** | Your stored turns and traces (`GET /api/metrics/live?window=24h\|7d\|30d\|all&strategy=`) | KPI tiles (questions, answer/abstention/error rate, 👍 rate, P50/P95/P99, $/question); time per step (P50 bar, P95 tick, nested agent steps); questions and P95 per day; retrieval signals (top-1 similarity, margin, sources, empty retrieval, rewrites, agent retries); generation and inference (tokens, context size, tok/s, model calls, citations); a per-strategy table |
+| **Offline evaluation** | Eval runs under `evals/` (`GET /api/metrics/evals[/{run}]`) | Retrieval (hit@1/5, recall, **precision@5** (new), MRR, nDCG), answer quality, the LLM judge, latency/cost, by category, and a metric across runs |
+| **Metric guide** | `GET /api/metrics/glossary` | Every metric's definition, formula, why it matters and its caveat; the same text as the ⓘ next to each number |
+
+**👍/👎 feedback** under each answer (`PUT /api/traces/{id}/feedback`) is stored on the turn,
+so every rating links to its trace.
+
+### Phase 7 decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-52 | **In-app dashboard, computed from traces** | Works locally (where the app is used today) and deployed; every number drills down to its questions; new metrics apply to all history | CloudWatch only (deployed-only, no drill-down); counters at write time (cannot add metrics retroactively) |
+| D-53 | **Online and offline kept visibly apart** | Behaviour without an answer key is not quality; mixing them invites wrong conclusions | One merged scorecard |
+| D-54 | **Glossary in code, served to the UI; a test requires an entry for every shown metric** | The explanation can never drift from, or go missing for, the computation | Hand-written help text in the page |
+| D-55 | **Chart forms by job; strategy colours fixed and validated** | Stat tiles for single numbers, bars for magnitude, separate charts for different units, tables with inline bars for multi-metric comparisons; the 5 strategy colours pass the colour-blind validator in both themes, with text labels and table views as relief | Pie/donut charts, a dual-axis chart, colour by rank |
+| D-56 | **Feedback stored on the turn** | The 👎 → trace → golden question loop needs the rating next to the evidence | A separate feedback table |
+
+Scaling note: live metrics read every conversation on each refresh, which is fine for one
+person. At scale, aggregate on write (the EMF metrics already do) and keep traces for drill-down.
 
 ## Login flow
 

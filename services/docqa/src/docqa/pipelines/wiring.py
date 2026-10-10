@@ -15,6 +15,7 @@ from docqa.adapters.bedrock import (
     bedrock_runtime,
 )
 from docqa.adapters.conversation_store import BlobConversationStore
+from docqa.adapters.eval_runs import EvalRunStore
 from docqa.adapters.lancedb_index import LanceChunkIndex, LanceChunkSearcher
 from docqa.adapters.local_blobs import LocalBlobStore
 from docqa.adapters.ollama import (
@@ -98,6 +99,15 @@ def build_qa_service(settings: QASettings, docs_bucket: str | None) -> QAService
         reranker=CohereReranker(settings.rerank_model_id, runtime),
         **limits,
     )
+
+
+def build_eval_run_store(settings: QASettings, docs_bucket: str | None) -> EvalRunStore:
+    """Eval runs sit under evals/ next to everything else (.data/evals/ in local mode)."""
+    if settings.provider is Provider.LOCAL:
+        return EvalRunStore(LocalBlobStore(settings.local_data_dir))
+    if not docs_bucket:
+        raise ValueError("a documents bucket is required with the bedrock provider")
+    return EvalRunStore(S3BlobStore(docs_bucket))
 
 
 def build_chat_service(settings: QASettings, docs_bucket: str | None) -> ChatService:

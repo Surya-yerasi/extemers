@@ -9,6 +9,7 @@ import os
 import secrets
 import time
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -22,17 +23,21 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from docqa.adapters.emf_metrics import EmfMetrics, NoopMetrics, TurnMetrics
+from docqa.adapters.eval_runs import EvalRun, EvalRunInfo, EvalRunStore
 from docqa.config import AppConfig, QASettings, get_config
 from docqa.domain.conversation import ConversationSummary
+from docqa.domain.metrics_glossary import GLOSSARY, MetricInfo
 from docqa.domain.retrieval import Strategy
 from docqa.pipelines.chat import (
     ChatService,
     Conversation,
     ConversationFullError,
     ConversationNotFoundError,
+    Feedback,
     Turn,
     TurnFailedError,
 )
+from docqa.pipelines.metrics import LiveMetrics, compute_live_metrics, since_for
 from docqa.pipelines.qa import MAX_QUESTION_CHARS
 from docqa.ports import ModelUnavailableError
 from docqa.web.auth import (
@@ -335,6 +340,71 @@ def delete_conversation(conversation_id: str, request: Request, user: CurrentUse
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found") from exc
 
 
+class FeedbackRequest(BaseModel):
+    rating: Feedback | None  # null clears it
+
+
+@router.put("/api/traces/{trace_id}/feedback")
+def set_feedback(trace_id: str, body: FeedbackRequest, request: Request, user: CurrentUser) -> Turn:
+    try:
+        turn = _chat_service(request).set_feedback(user.sub, trace_id, body.rating)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "trace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    logger.info("feedback_recorded", extra={"trace_id": trace_id, "rating": body.rating})
+    return turn
+
+
+# ------------------------------------------------------------------ metrics
+
+
+@router.get("/api/metrics/glossary")
+def metrics_glossary(user: CurrentUser) -> dict[str, MetricInfo]:
+    return GLOSSARY
+
+
+@router.get("/api/metrics/live")
+def live_metrics(
+    request: Request, user: CurrentUser, window: str = "7d", strategy: Strategy | None = None
+) -> LiveMetrics:
+    """Online metrics over your own questions: computed from the stored traces."""
+    try:
+        since = since_for(window, datetime.now(UTC))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    turns = _chat_service(request).turns(user.sub, since)
+    return compute_live_metrics(turns, window, strategy)
+
+
+def _eval_runs(request: Request) -> EvalRunStore:
+    if request.app.state.eval_runs is None:
+        try:
+            request.app.state.eval_runs = request.app.state.eval_runs_factory(
+                _config(request).docs_bucket
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "no eval storage configured"
+            ) from exc
+    store: EvalRunStore = request.app.state.eval_runs
+    return store
+
+
+@router.get("/api/metrics/evals")
+def list_eval_runs(request: Request, user: CurrentUser) -> list[EvalRunInfo]:
+    """Offline evaluation runs (golden set), newest first."""
+    return _eval_runs(request).list()
+
+
+@router.get("/api/metrics/evals/{run_id}")
+def get_eval_run(run_id: str, request: Request, user: CurrentUser) -> EvalRun:
+    run = _eval_runs(request).get(run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "eval run not found")
+    return run
+
+
 @router.get("/api/traces/{trace_id}")
 def get_trace(trace_id: str, request: Request, user: CurrentUser) -> Turn:
     try:
@@ -363,18 +433,26 @@ def _default_chat_factory(bucket: str | None) -> ChatService:
     return build_chat_service(QASettings(), bucket)
 
 
+def _default_eval_runs_factory(bucket: str | None) -> EvalRunStore:
+    from docqa.pipelines.wiring import build_eval_run_store  # noqa: PLC0415
+
+    return build_eval_run_store(QASettings(), bucket)
+
+
 def _default_metrics(config: AppConfig) -> TurnMetrics:
     if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):  # only Lambda ships stdout to CloudWatch
         return EmfMetrics({"service": "docqa-web", "environment": config.environment})
     return NoopMetrics()
 
 
-def create_app(
+def create_app(  # noqa: PLR0913 - every dependency is injectable for tests
     config: AppConfig | None = None,
     verifier: TokenVerifier | None = None,
     http: httpx.Client | None = None,
+    *,
     chat: ChatService | None = None,
     metrics: TurnMetrics | None = None,
+    eval_runs: EvalRunStore | None = None,
 ) -> FastAPI:
     """Build the app. Dependencies are injectable for tests; defaults come from config."""
     config = config or get_config()
@@ -386,6 +464,8 @@ def create_app(
     app.state.http = http or httpx.Client(timeout=10)
     app.state.chat = chat
     app.state.chat_factory = _default_chat_factory
+    app.state.eval_runs = eval_runs
+    app.state.eval_runs_factory = _default_eval_runs_factory
     app.state.metrics = metrics or _default_metrics(config)
     app.middleware("http")(_security_headers)
     app.add_exception_handler(NotAuthenticatedError, _not_authenticated)

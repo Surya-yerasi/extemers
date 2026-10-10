@@ -155,3 +155,15 @@ def test_mean_and_percentile() -> None:
     assert percentile(values, 95) == 19.0
     assert percentile(values, 100) == 20.0
     assert percentile([], 95) is None
+
+
+def test_precision_counts_relevant_chunks_among_k() -> None:
+    gpa_a = chunk("transcript", "Cumulative GPA: 3.86", "a")
+    gpa_b = chunk("transcript", "Cumulative GPA: 3.86 again", "b")
+    other = chunk("degree", "BSc", "c")
+    scores = retrieval_scores(item(GPA), [gpa_a, other, gpa_b])
+    assert scores["precision@1"] == 1.0
+    assert scores["precision@3"] == pytest.approx(2 / 3)
+    assert scores["precision@5"] == pytest.approx(
+        2 / 5
+    )  # capped by relevant chunks, not by quality

@@ -4,9 +4,10 @@ The turn ID is also the trace ID ("c_<16 hex>.<n>"), so a trace can be opened fr
 alone, and every log line and metric for that question carries it.
 """
 
+import builtins  # ChatService.list shadows the built-in inside the class
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,8 @@ from docqa.domain.tracing import Trace, Tracer
 from docqa.pipelines.qa import AskResult, QAService, validate_question
 from docqa.ports import ConversationStore
 
+Feedback = Literal["up", "down"]
+
 
 class Turn(BaseModel):
     turn_id: str  # also the trace ID
@@ -33,6 +36,8 @@ class Turn(BaseModel):
     result: AskResult | None = None  # None when the turn failed
     error: str | None = None
     trace: Trace
+    feedback: Feedback | None = None  # the user's thumbs up/down, if given
+    feedback_at: datetime | None = None
 
 
 class Conversation(BaseModel):
@@ -152,6 +157,31 @@ class ChatService:
     def delete(self, owner: str, conversation_id: str) -> None:
         self.get(owner, conversation_id)  # 404 for unknown or foreign IDs
         self._store.delete(owner, conversation_id)
+
+    def set_feedback(self, owner: str, trace_id: str, rating: Feedback | None) -> Turn:
+        """Record (or clear, with None) the user's rating of one answer."""
+        conversation, turn = self.turn(owner, trace_id)
+        if turn.result is None:
+            raise ValueError("a failed question cannot be rated")
+        turn.feedback = rating
+        turn.feedback_at = datetime.now(UTC) if rating else None
+        self._store.save(conversation)
+        return turn
+
+    def turns(self, owner: str, since: datetime | None = None) -> builtins.list[Turn]:
+        """Every turn of every conversation (newest conversations first), for metrics.
+        One read per conversation: fine for one person's history; a production system
+        would aggregate as it writes instead (see the metrics guide)."""
+        found: builtins.list[Turn] = []
+        for summary in self._store.list(owner):
+            if since and summary.updated_at < since:
+                continue  # no turn in it can be newer than its last update
+            conversation = self._store.get(owner, summary.conversation_id)
+            if conversation is not None:
+                found.extend(
+                    t for t in conversation.turns if since is None or t.created_at >= since
+                )
+        return found
 
     def turn(self, owner: str, trace_id: str) -> tuple[Conversation, Turn]:
         parsed = parse_turn_id(trace_id)

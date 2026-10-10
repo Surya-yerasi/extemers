@@ -434,3 +434,66 @@ def test_static_assets_are_served(client: TestClient) -> None:
     assert response.status_code == 200
     assert "textContent" in response.text
     assert ".innerHTML" not in response.text
+
+
+def test_metrics_endpoints(api: TestClient, chat: ChatService) -> None:
+    turn = api.post("/api/ask", json={"question": "gpa?"}).json()["turn"]
+    assert (
+        api.put(f"/api/traces/{turn['turn_id']}/feedback", json={"rating": "up"}).json()["feedback"]
+        == "up"
+    )
+    live = api.get("/api/metrics/live?window=all").json()
+    assert live["kpis"]["questions"] == 1
+    assert live["kpis"]["helpful_rate"] == 1.0
+    assert api.get("/api/metrics/live?window=1y").status_code == 422
+    assert api.get("/api/metrics/live?strategy=magic").status_code == 422
+    assert "mrr" in api.get("/api/metrics/glossary").json()
+    assert (
+        api.put("/api/traces/c_0123456789abcdef.1/feedback", json={"rating": "up"}).status_code
+        == 404
+    )
+    assert (
+        api.put(f"/api/traces/{turn['turn_id']}/feedback", json={"rating": "meh"}).status_code
+        == 422
+    )
+
+
+def test_feedback_on_a_failed_turn_is_rejected(
+    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
+) -> None:
+    app = create_app(config, verifier, chat=chat_service(FailingGenerator(RuntimeError("x"))))
+    client = TestClient(app, raise_server_exceptions=False)
+    client.cookies.set(SESSION_COOKIE, make_token())
+    client.post("/api/ask", json={"question": "gpa?"})
+    trace_id = client.get("/api/conversations").json()[0]["conversation_id"] + ".1"
+    assert client.put(f"/api/traces/{trace_id}/feedback", json={"rating": "up"}).status_code == 409
+
+
+def test_eval_run_endpoints(
+    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
+) -> None:
+    from docqa.adapters.eval_runs import EvalRunStore  # noqa: PLC0415
+    from tests.fakes import MemoryBlobStore  # noqa: PLC0415
+
+    blobs = MemoryBlobStore(
+        {"evals/20261007-010000-local/summary.json": b'[{"strategy": "agent"}]'}
+    )
+    client = TestClient(create_app(config, verifier, eval_runs=EvalRunStore(blobs)))
+    client.cookies.set(SESSION_COOKIE, make_token())
+    assert [r["run_id"] for r in client.get("/api/metrics/evals").json()] == [
+        "20261007-010000-local"
+    ]
+    assert client.get("/api/metrics/evals/20261007-010000-local").json()["strategies"] == ["agent"]
+    assert client.get("/api/metrics/evals/nope").status_code == 404
+    assert client.get("/api/metrics/evals").status_code == 200
+    assert TestClient(create_app(config, verifier)).get("/api/metrics/evals").status_code == 401
+
+
+def test_eval_store_is_built_lazily(
+    config: AppConfig, verifier: TokenVerifier, make_token: Callable[..., str]
+) -> None:
+    app = create_app(config, verifier)
+    app.state.eval_runs_factory = lambda bucket: (_ for _ in ()).throw(ValueError("no bucket"))
+    client = TestClient(app)
+    client.cookies.set(SESSION_COOKIE, make_token())
+    assert client.get("/api/metrics/evals").status_code == 503
