@@ -13,6 +13,7 @@ The next service is **docqa**, a personal-document Q&A (RAG) app on Bedrock.
 | 4 | [CI/CD](04-ci-cd.md) | What runs on a PR and on merge, and how GitHub authenticates to AWS |
 | 5 | [Operations](05-operations.md) | First-time setup, adding a service, tagging, cost, teardown, incidents |
 | 6 | [docqa](06-docqa.md) | The document Q&A service: architecture, decisions, login flow, runbook |
+| 7 | [Measuring an AI application](07-ai-metrics.md) | What every metric on the Metrics tab means: latency, inference, retrieval, generation, online vs offline, statistics |
 
 ## Diagrams
 

@@ -6,6 +6,7 @@
   <title>docqa</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/metrics.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body data-max-chars="{{ max_chars }}">
@@ -14,6 +15,7 @@
     <nav class="tabs" aria-label="Views">
       <a href="#/" id="tab-chat" class="tab">Chat</a>
       <a href="#/traces" id="tab-traces" class="tab">Traces</a>
+      <a href="#/metrics" id="tab-metrics" class="tab">Metrics</a>
     </nav>
     <span class="who">{{ email }} · {{ environment }} · <a href="/logout">Sign out</a></span>
   </header>
@@ -88,5 +90,33 @@
       </section>
     </div>
   </div>
+  <div id="view-metrics" class="view metrics" hidden>
+    <div class="metrics-bar">
+      <nav class="subtabs" aria-label="Metrics views">
+        <a href="#/metrics/live" data-sub="live">Live traffic</a>
+        <a href="#/metrics/offline" data-sub="offline">Offline evaluation</a>
+        <a href="#/metrics/guide" data-sub="guide">Metric guide</a>
+      </nav>
+      <div class="filters" id="live-filters">
+        <div class="segmented" role="group" aria-label="Time window">
+          <button type="button" data-window="24h">24 h</button>
+          <button type="button" data-window="7d">7 days</button>
+          <button type="button" data-window="30d">30 days</button>
+          <button type="button" data-window="all">All</button>
+        </div>
+        <label for="metrics-strategy" class="visually-hidden">Strategy</label>
+        <select id="metrics-strategy">
+          <option value="">All strategies</option>
+          {% for value, label in strategies.items() %}
+          <option value="{{ value }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+        <button type="button" id="metrics-refresh" class="secondary">Refresh</button>
+        <span id="metrics-updated" class="muted"></span>
+      </div>
+    </div>
+    <div id="metrics-body" class="metrics-body" aria-live="polite"></div>
+  </div>
+  <div id="viz-tip" class="viz-tip" role="tooltip" hidden></div>
 </body>
 </html>

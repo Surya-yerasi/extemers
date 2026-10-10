@@ -26,7 +26,7 @@ def render_report(summaries: Sequence[StrategySummary], meta: dict[str, str]) ->
     lines += [f"- **{key}:** {value}" for key, value in meta.items()]
 
     lines += ["", "## Retrieval (answerable questions)", ""]
-    keys = ["hit@1", "hit@3", "hit@5", "recall@5", "mrr", "ndcg@5"]
+    keys = ["hit@1", "hit@3", "hit@5", "recall@5", "precision@5", "mrr", "ndcg@5"]
     lines += _table(
         ["strategy", *keys],
         [[s.strategy, *(_fmt(s.retrieval.get(k)) for k in keys)] for s in summaries],

@@ -119,7 +119,8 @@ def test_summarize_and_report() -> None:
 
     report = render_report(summaries, {"provider": "test"})
     assert "- **provider:** test" in report
-    assert "| dense | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |" in report
+    # hit@1, hit@3, hit@5, recall@5, precision@5 (1 relevant of 5 slots), mrr, ndcg@5
+    assert "| dense | 1.000 | 1.000 | 1.000 | 1.000 | 0.200 | 1.000 | 1.000 |" in report
     assert "## LLM judge" in report
     assert "| hybrid |" in report
     assert "## By category" in report

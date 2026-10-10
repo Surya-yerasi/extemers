@@ -132,7 +132,10 @@ def summarize(records: Sequence[EvalRecord]) -> list[StrategySummary]:
                 errors=len(rows) - len(ok),
                 retrieval={
                     key: mean([r.retrieval.get(key) for r in answerable])
-                    for key in ["mrr", *(f"{m}@{k}" for m in ("hit", "recall", "ndcg") for k in KS)]
+                    for key in [
+                        "mrr",
+                        *(f"{m}@{k}" for m in ("hit", "recall", "precision", "ndcg") for k in KS),
+                    ]
                 },
                 answers=_answer_summary(answerable, unanswerable),
                 judge=_judge_summary(answerable),

@@ -78,12 +78,21 @@ function errorDetail(data, fallback) {
 
 function route() {
   const hash = window.location.hash || "#/";
-  const [, kind, id] = hash.match(/^#\/(c|t|traces)?\/?(.*)$/) || [];
+  const [, kind, id] = hash.match(/^#\/(c|t|traces|metrics)?\/?(.*)$/) || [];
   const traces = kind === "t" || kind === "traces";
-  $("view-chat").hidden = traces;
+  const metrics = kind === "metrics";
+  $("view-chat").hidden = traces || metrics;
   $("view-traces").hidden = !traces;
-  $("tab-chat").classList.toggle("active", !traces);
+  $("view-metrics").hidden = !metrics;
+  $("tab-chat").classList.toggle("active", !traces && !metrics);
   $("tab-traces").classList.toggle("active", traces);
+  $("tab-metrics").classList.toggle("active", metrics);
+  const tip = $("viz-tip");
+  if (tip) tip.hidden = true;
+  if (metrics) {
+    window.DocqaMetrics.show(id || "live");
+    return;
+  }
   $("tab-chat").href = state.conversation ? `#/c/${state.conversation.conversation_id}` : "#/";
 
   if (kind === "c" && id) openConversation(id);
@@ -205,9 +214,42 @@ function answerBubble(turn) {
   meta.append(
     document.createTextNode(`${r.strategy} · ${ms(turn.trace.duration_ms)} · ${usd(r.cost.usd)} · `),
     link(`#/t/${turn.turn_id}`, `trace ${turn.turn_id}`, "mono"),
+    feedbackButtons(turn),
   );
   bubble.append(meta);
   return bubble;
+}
+
+// Thumbs up/down: the online usefulness signal. Clicking the active rating clears it.
+function feedbackButtons(turn) {
+  const box = el("span", null, "feedback");
+  const buttons = {};
+  const paint = () => {
+    for (const [rating, button] of Object.entries(buttons)) {
+      button.setAttribute("aria-pressed", String(turn.feedback === rating));
+    }
+  };
+  for (const [rating, glyph, label] of [["up", "👍", "Helpful"], ["down", "👎", "Not helpful"]]) {
+    const button = el("button", glyph, "thumb");
+    button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", async () => {
+      const next = turn.feedback === rating ? null : rating;
+      const { response } = await api(`/api/traces/${encodeURIComponent(turn.turn_id)}/feedback`, {
+        method: "PUT",
+        body: JSON.stringify({ rating: next }),
+      });
+      if (response.ok) {
+        turn.feedback = next;
+        paint();
+      }
+    });
+    buttons[rating] = button;
+    box.append(button);
+  }
+  paint();
+  return box;
 }
 
 function errorBubble(traceId, message) {

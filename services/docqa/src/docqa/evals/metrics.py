@@ -10,8 +10,11 @@ import re
 from collections.abc import Sequence
 
 from docqa.domain.retrieval import RetrievedChunk
+from docqa.domain.stats import mean, percentile
 from docqa.evals.dataset import Evidence, GoldenItem
 from docqa.pipelines.qa import AskResult
+
+__all__ = ["mean", "percentile"]  # re-exported for the runner and older imports
 
 KS = (1, 3, 5)
 _MARKDOWN = re.compile(r"[#*_`>]")
@@ -34,7 +37,7 @@ def chunk_matches(evidence: Evidence, chunk: RetrievedChunk) -> bool:
 
 
 def retrieval_scores(item: GoldenItem, chunks: Sequence[RetrievedChunk]) -> dict[str, float]:
-    """hit@k, recall@k, nDCG@k for k in KS, and MRR, over best-first chunks."""
+    """hit@k, recall@k, precision@k, nDCG@k for k in KS, and MRR, over best-first chunks."""
     covered: set[int] = set()
     gains: list[float] = []  # 1.0 when the chunk covers a not-yet-covered evidence item
     first_relevant: int | None = None
@@ -52,6 +55,8 @@ def retrieval_scores(item: GoldenItem, chunks: Sequence[RetrievedChunk]) -> dict
         covered_k: set[int] = set()
         for chunk in chunks[:k]:
             covered_k |= {i for i, ev in enumerate(item.evidence) if chunk_matches(ev, chunk)}
+        relevant_k = sum(1 for c in chunks[:k] if any(chunk_matches(ev, c) for ev in item.evidence))
+        scores[f"precision@{k}"] = relevant_k / k
         scores[f"hit@{k}"] = 1.0 if first_relevant and first_relevant <= k else 0.0
         scores[f"recall@{k}"] = len(covered_k) / needed
         dcg = sum(g / math.log2(i + 2) for i, g in enumerate(gains[:k]))
@@ -93,17 +98,3 @@ def answer_scores(item: GoldenItem, result: AskResult) -> dict[str, float | None
         "citation_hit": float(good > 0),
         "citation_precision": good / len(cited) if cited else None,
     }
-
-
-def mean(values: Sequence[float | None]) -> float | None:
-    present = [v for v in values if v is not None]
-    return sum(present) / len(present) if present else None
-
-
-def percentile(values: Sequence[float], p: float) -> float | None:
-    """Nearest-rank percentile (no interpolation): P95 of 20 samples is the 19th smallest."""
-    if not values:
-        return None
-    ordered = sorted(values)
-    rank = max(1, math.ceil(p / 100 * len(ordered)))
-    return ordered[rank - 1]
