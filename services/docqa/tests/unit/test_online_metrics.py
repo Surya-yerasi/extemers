@@ -128,10 +128,17 @@ def test_every_metric_on_the_page_is_explained() -> None:
     shown = {
         k for k in m.kpis if k not in {"conversations", "total_cost", "latency_p99", "tail_ratio"}
     }
-    shown |= set(m.retrieval) | set(m.generation)
+    shown |= set(m.retrieval) | set(m.generation) | set(m.judge) | set(m.agent)
+    shown |= set(m.conversation) | set(m.safety)
     js = (STATIC / "metrics.js").read_text()
     shown |= set(re.findall(r'tile\("([a-z0-9_@]+)"', js))
-    for array in ("RETRIEVAL_KEYS", "ANSWER_KEYS", "JUDGE_KEYS"):
+    # scorecard rows: ["Area", "metric", ...]
+    shown |= set(
+        re.findall(
+            r'\["(?:Retrieval|Generation|Agent|Chatbot|Operations|Safety)", "([a-z0-9_@]+)"', js
+        )
+    )
+    for array in ("RETRIEVAL_KEYS", "ANSWER_KEYS", "JUDGE_KEYS", "AGENT_KEYS"):
         match = re.search(rf"const {array} = \[([^\]]+)\]", js)
         assert match, array
         shown |= set(re.findall(r'"([a-z0-9_@]+)"', match.group(1)))

@@ -566,56 +566,65 @@ so every rating links to its trace.
 Scaling note: live metrics read every conversation on each refresh, which is fine for one
 person. At scale, aggregate on write (the EMF metrics already do) and keep traces for drill-down.
 
-## Login flow
+## Phase 7b: the Documents tab
 
-![docqa login](diagrams/06-docqa-login.png)
+A fourth tab, **Documents**, lists every document and where it is in ingestion, refreshing
+itself every 2 s while something is ingesting and every 10 s otherwise. No single store knows
+the truth, so the page joins three:
 
-<sub>Source: [diagrams/06-docqa-login.mmd](diagrams/06-docqa-login.mmd)</sub>
+| Source | Tells you | Read by the web app as |
+|---|---|---|
+| `raw/` listing | what you uploaded: name, size, modified time | a listing only (`s3:ListBucket`); never the contents |
+| `ingest-status/<doc_id>.json` (new) | the last ingest attempt: stage, progress, per-stage time, error | `s3:GetObject` on `ingest-status/*` |
+| The index (LanceDB) | what retrieval can actually search: chunks per document | a scan without vectors |
 
-Protections:
-- `state` is checked with a constant-time comparison.
-- The PKCE verifier never leaves the browser cookie and the token request.
-- Redirect URIs are built from the `Host` header **only if they are on the allow-list**, which
-  blocks host-header injection.
-- Cookies are `HttpOnly` and `SameSite=Lax`, plus `Secure` over HTTPS.
-- Responses carry CSP, `X-Frame-Options: DENY`, `nosniff` and `no-referrer` headers.
-- Logs record the user's `sub` (an opaque ID), never the email address.
+Ingestion rewrites the status record at each stage (read → parse → metadata → chunk → embed →
+index), with progress inside parse (pages) and embed (chunks), throttled to one write per
+second. A failed status write is logged and ignored: the document matters more than the page.
 
-## Delivery
+| State | Meaning | Fix |
+|---|---|---|
+| Indexed | searchable and current | – |
+| Processing | ingesting now | wait |
+| Pending | uploaded, not ingested | local: `make docqa-local-ingest`; deployed: automatic |
+| Outdated | the file changed after it was indexed; answers use the old version | ingest again |
+| Failed | the last attempt failed at a named stage (an older version may still be searched) | read the error, fix, ingest again |
+| Stalled | "processing" with no update for 15 min (the Lambda limit): the run died | ingest again |
+| Orphaned | the file is gone but its chunks are still searchable | local: `make docqa-local-prune`; deployed: the S3 delete event does it |
+| Skipped | not PDF, PNG or JPEG | – |
 
-| Stage | What happens |
+APIs: `GET /api/documents` (overview) and `GET /api/documents/{doc_id}` (one document with its
+chunks and the context header each was embedded with).
+
+### Phase 7b decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-57 | **State derived by joining raw/, status records and the index** | Each source alone misleads: a file can be uploaded but unindexed, indexed from an older version, or deleted while still searchable | Trusting the index (misses pending and failed), or a status table alone (drifts from reality) |
+| D-58 | **One status object per document, written by ingestion** | Works the same for the Lambda and the laptop CLI; no new service; per-document keys never conflict | DynamoDB (another resource for one user); parsing CloudWatch logs (deployed-only, slow) |
+| D-59 | **"Changed" means modified after the last attempt started** | The web role cannot read raw/ contents to compare hashes; S3 `LastModified` is the upload time, so this is exact when deployed. Locally, copy with `cp -p` (as `make docqa-local-samples` now does) or a same-time copy reads as outdated | Hashing raw files on every poll (reads every document every 2 s) |
+| D-60 | **Read-only page; uploads stay in S3 / the folder** | Uploading would give the public web function write access to `raw/`, which triggers ingestion and model spend | An upload button (possible later, behind a size limit and a separate role) |
+| D-61 | **Poll, not push** | One user, a handful of documents: a 2 s poll is cheap and simple; it stops when the tab is hidden or closed | WebSockets/SSE (Function URLs need response streaming for SSE; more moving parts) |
+
+## Phase 7c: full metric coverage, guardrails and live judging
+
+The Metrics tab now covers retrieval, generation, agent, chatbot, operations and safety, and
+opens with a **scorecard** (every metric, its source, a starting target and a status). The
+definitions are in [07-ai-metrics.md](07-ai-metrics.md) §10-13.
+
+| Added | How |
 |---|---|
-| PR | `docqa` job (ruff, mypy strict, pytest ≥ 90% coverage), `docqa-image` job (arm64 build via QEMU, no push), Terraform plan with `image_tag = <PR head SHA>` |
-| Merge | Deploy: targeted apply of `module.docqa_ecr` → build and push `docqa-dev:<sha>` (skipped if it already exists) → plan → apply → smoke test (`/health` = 200, `/api/me` without login = 401) |
+| Guardrails | `domain/guardrails.py`: input (injection → blocked) and output (SSN/card → redacted, uncited → flagged) checks inside `QAService.ask`, recorded as `guard_input`/`guard_output` spans and on the result |
+| Agent metrics | `domain/agent_trace.py` reads steps, grades and retries from a trace; used live and by the eval runner |
+| Live judging | `make docqa-local-judge` → `pipelines/online_eval.py` scores the newest unjudged answers with RAGAS (faithfulness, answer relevance, context precision without reference) plus a coherence rubric; scores stored on the turn |
+| Offline | `hallucination_rate` in answer metrics; an `agent` block per strategy; coherence in judged runs |
+| Operations | P95 cost per request; throughput (peak questions per minute) |
 
-Images are built with `--provenance=false --sbom=false`, because Lambda rejects image indexes
-that carry attestation manifests.
+### Phase 7c decisions
 
-## Runbook
-
-**Create your login** (once, after the first deploy):
-
-```bash
-POOL=$(terraform -chdir=infra/envs/dev output -raw docqa_user_pool_id)
-aws cognito-idp admin-create-user --user-pool-id "$POOL" \
-  --username you@example.com \
-  --user-attributes Name=email,Value=you@example.com Name=email_verified,Value=true \
-  --desired-delivery-mediums EMAIL
-```
-
-Cognito emails you a temporary password. At first sign-in you choose a new password and scan a
-QR code with an authenticator app (TOTP).
-
-**Budget alerts:** add a repository variable `ALERT_EMAILS` with one or more addresses,
-comma-separated (e.g. `you@example.com`). Until it is set, the budget exists but sends no email.
-
-**Run locally:**
-
-| Command | What |
-|---|---|
-| `make docqa-check` | ruff, mypy, pytest |
-| `make docqa-dev` | uvicorn with auto-reload on :8080, using the deployed `/docqa/dev/config` (log in through the real Cognito; `http://localhost:8080/callback` is allow-listed) |
-| `make docqa-run` | The real arm64 image on :8080, with your current AWS credentials exported into the container for the run only |
-
-**Plan or destroy manually:** `make tf-plan IMAGE_TAG=<sha in ECR>`. The bucket (your documents)
-and the KMS key are protected by `prevent_destroy`; Cognito has deletion protection.
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-62 | **Judge live traffic in a sampled background job** | Judging inline adds ~35 s per answer locally (several judge calls); sampled async scoring is the production pattern, and scores sit next to the trace | Judging every answer inline; offline-only judging |
+| D-63 | **Rule-based guardrails first, recorded like any other step** | Free, deterministic, explainable, testable; findings and metrics keep the same shape when a model-based layer (Bedrock Guardrails) is added | No guardrails (the violation metric would be meaningless); a classifier model first |
+| D-64 | **Merge duplicates, redefine what does not fit** | Response relevance = answer relevance; one hallucination rate; "tool call accuracy" becomes search accuracy because the agent has one tool; 👍/👎 is a two-point CSAT | Separate metrics with identical computations |
+| D-65 | **Starting targets in the glossary, shown on the scorecard** | "Where do we stand" needs a bar; one place to change it | Hard-coded thresholds in the page; no targets |

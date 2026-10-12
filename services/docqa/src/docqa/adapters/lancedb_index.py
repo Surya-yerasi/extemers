@@ -13,6 +13,7 @@ import lancedb
 import pyarrow as pa
 from lancedb.index import FTS
 
+from docqa.domain.documents import IndexedChunk, IndexedDocument
 from docqa.domain.models import Chunk, ParsedDocument
 from docqa.domain.retrieval import RetrievedChunk, ranked
 
@@ -108,12 +109,9 @@ def _to_chunk(row: dict[str, Any], stage: str, score: float) -> RetrievedChunk:
     return RetrievedChunk(**{k: row[k] for k in _RESULT_COLUMNS}, scores={stage: round(score, 6)})
 
 
-class LanceChunkSearcher:
-    """Read-only. Never creates the table, so the web function needs no write access.
-
-    Exact (flat) vector search: at a few thousand chunks it beats an ANN index on both
-    recall and latency. A missing table (nothing ingested yet) returns no results.
-    """
+class _ReadOnlyTable:
+    """Never creates the table, so the web function needs no write access. A missing table
+    (nothing ingested yet) reads as empty."""
 
     def __init__(self, uri: str, table_name: str) -> None:
         self._db: Any = lancedb.connect(uri)
@@ -127,8 +125,13 @@ class LanceChunkSearcher:
             except ValueError:  # table not found
                 return None
         else:
-            self._table.checkout_latest()  # pick up documents ingested since the last query
+            self._table.checkout_latest()  # pick up documents ingested since the last read
         return self._table
+
+
+class LanceChunkSearcher(_ReadOnlyTable):
+    """Exact (flat) vector search: at a few thousand chunks it beats an ANN index on both
+    recall and latency."""
 
     def vector_search(self, vector: Sequence[float], limit: int) -> list[RetrievedChunk]:
         table = self._open()
@@ -153,3 +156,48 @@ class LanceChunkSearcher:
             return []
         rows = table.search(query, query_type="fts").select(_RESULT_COLUMNS).limit(limit).to_list()
         return ranked([_to_chunk(r, "bm25", r["_score"]) for r in rows], "bm25")
+
+
+_DOC_COLUMNS = [
+    "doc_id", "source_key", "content_hash", "page_end",
+    "doc_type", "title", "institution", "person", "date",
+]  # fmt: skip
+_CHUNK_COLUMNS = ["chunk_id", "ordinal", "page_start", "page_end", "text", "embed_text"]
+
+
+class LanceDocumentCatalog(_ReadOnlyTable):
+    """What the index holds, per document: a scan without vectors (a few KB per chunk saved)."""
+
+    def documents(self) -> list[IndexedDocument]:
+        table = self._open()
+        if table is None:
+            return []
+        docs: dict[str, IndexedDocument] = {}
+        for row in table.search().select(_DOC_COLUMNS).limit(None).to_list():
+            doc = docs.get(row["doc_id"])
+            if doc is None:
+                docs[row["doc_id"]] = IndexedDocument(
+                    **{k: row[k] or "" for k in _DOC_COLUMNS if k != "page_end"},
+                    chunks=1,
+                    pages=row["page_end"],
+                )
+            else:
+                doc.chunks += 1
+                doc.pages = max(doc.pages, row["page_end"])
+        return list(docs.values())
+
+    def chunks(self, doc_id: str) -> list[IndexedChunk]:
+        table = self._open()
+        if table is None:
+            return []
+        rows = (
+            table.search()
+            .where(f"doc_id = {_quote(doc_id)}")
+            .select(_CHUNK_COLUMNS)
+            .limit(None)
+            .to_list()
+        )
+        return sorted(
+            (IndexedChunk(**{k: r[k] for k in _CHUNK_COLUMNS}) for r in rows),
+            key=lambda c: c.ordinal,
+        )

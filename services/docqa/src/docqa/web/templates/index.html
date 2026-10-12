@@ -7,6 +7,7 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/metrics.js" defer></script>
+  <script src="/static/documents.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body data-max-chars="{{ max_chars }}">
@@ -16,6 +17,7 @@
       <a href="#/" id="tab-chat" class="tab">Chat</a>
       <a href="#/traces" id="tab-traces" class="tab">Traces</a>
       <a href="#/metrics" id="tab-metrics" class="tab">Metrics</a>
+      <a href="#/documents" id="tab-documents" class="tab">Documents</a>
     </nav>
     <span class="who">{{ email }} · {{ environment }} · <a href="/logout">Sign out</a></span>
   </header>
@@ -116,6 +118,24 @@
       </div>
     </div>
     <div id="metrics-body" class="metrics-body" aria-live="polite"></div>
+  </div>
+  <div id="view-documents" class="view metrics" hidden>
+    <div class="metrics-bar">
+      <div class="docs-title">
+        <h1>Documents</h1>
+        <span id="docs-table" class="mono muted" title="Index table"></span>
+      </div>
+      <div class="filters">
+        <span id="docs-live" class="live-pill">Live</span>
+        <span id="docs-updated" class="muted" role="status"></span>
+        <button type="button" id="docs-refresh" class="secondary">Refresh</button>
+      </div>
+    </div>
+    <div class="metrics-body">
+      <div id="docs-howto-slot"></div>
+      <section id="docs-detail" class="doc-detail" hidden></section>
+      <div id="docs-overview"></div>
+    </div>
   </div>
   <div id="viz-tip" class="viz-tip" role="tooltip" hidden></div>
 </body>

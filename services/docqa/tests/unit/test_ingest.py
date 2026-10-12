@@ -1,8 +1,10 @@
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import pytest
 
+from docqa.domain.documents import IngestStage, IngestState, IngestStatus, status_key
 from docqa.domain.models import doc_id_for
 from docqa.pipelines.ingest import IngestService, Outcome, content_type_for, parsed_key
 from tests.conftest_samples import sample
@@ -104,12 +106,14 @@ def test_skips(service: IngestService, key: str, reason: str) -> None:
     assert result.reason == reason
 
 
-def test_delete_removes_index_and_cache(service: IngestService, parts: Parts) -> None:
+def test_delete_removes_index_cache_and_status(service: IngestService, parts: Parts) -> None:
     service.ingest("raw/transcript.pdf")
     result = service.delete("raw/transcript.pdf")
     assert result.outcome is Outcome.DELETED
     assert parts.index.count() == 0
-    assert parsed_key(doc_id_for("raw/transcript.pdf")) not in parts.blobs.objects
+    doc_id = doc_id_for("raw/transcript.pdf")
+    assert parsed_key(doc_id) not in parts.blobs.objects
+    assert status_key(doc_id) not in parts.blobs.objects
 
 
 def test_delete_unknown_document_is_harmless(service: IngestService) -> None:
@@ -119,3 +123,103 @@ def test_delete_unknown_document_is_harmless(service: IngestService) -> None:
 def test_content_type_for() -> None:
     assert content_type_for("a.json") == "application/json"
     assert content_type_for("a.unknownext") == "application/octet-stream"
+
+
+# ------------------------------------------------------------------ status records
+
+
+def read_status(parts: Parts, key: str) -> IngestStatus:
+    return IngestStatus.model_validate_json(parts.blobs.objects[status_key(doc_id_for(key))])
+
+
+def test_status_records_every_stage(service: IngestService, parts: Parts) -> None:
+    result = service.ingest("raw/award.pdf")
+    st = read_status(parts, "raw/award.pdf")
+    assert st.state is IngestState.INDEXED
+    assert st.stage is None
+    assert list(st.timings_ms) == ["read", "parse", "metadata", "chunk", "embed", "index"]
+    assert (st.pages, st.vision_pages, st.chunks, st.reused_parse) == (1, 1, result.chunks, False)
+    assert st.finished_at is not None
+    assert st.started_at <= st.finished_at
+    assert st.content_hash
+    assert st.error is None
+
+
+def test_reused_parse_records_no_parse_or_metadata_time(
+    service: IngestService, parts: Parts
+) -> None:
+    service.ingest("raw/award.pdf")
+    service.ingest("raw/award.pdf")
+    st = read_status(parts, "raw/award.pdf")
+    assert st.reused_parse is True
+    assert "parse" not in st.timings_ms
+    assert "metadata" not in st.timings_ms
+
+
+def test_failure_is_recorded_at_its_stage_and_reraised(parts: Parts) -> None:
+    class BrokenEmbedder:
+        dimensions = 8
+
+        def embed(self, texts: object) -> list[list[float]]:
+            raise RuntimeError("model unavailable")
+
+    service = IngestService(
+        blobs=parts.blobs,
+        vision=parts.vision,
+        metadata=parts.metadata,
+        embedder=BrokenEmbedder(),
+        index=parts.index,
+        index_table="chunks__t",
+    )
+    with pytest.raises(RuntimeError):
+        service.ingest("raw/transcript.pdf")
+    st = read_status(parts, "raw/transcript.pdf")
+    assert st.state is IngestState.FAILED
+    assert st.stage is IngestStage.EMBED
+    assert st.error == "RuntimeError: model unavailable"
+    assert st.index_table == "chunks__t"
+    assert "embed" not in st.timings_ms  # the failed stage has no completed time
+    assert "chunk" in st.timings_ms
+
+
+def test_status_shows_progress_while_running(parts: Parts) -> None:
+    seen: list[IngestStatus] = []
+
+    class WatchingEmbedder:
+        dimensions = 8
+
+        def embed(self, texts: Sequence[str]) -> list[list[float]]:
+            seen.append(read_status(parts, "raw/transcript.pdf"))
+            return [[1.0] * 8 for _ in texts]
+
+    service = IngestService(
+        blobs=parts.blobs,
+        vision=parts.vision,
+        metadata=parts.metadata,
+        embedder=WatchingEmbedder(),
+        index=parts.index,
+    )
+    service.ingest("raw/transcript.pdf")
+    first = seen[0]
+    assert first.state is IngestState.PROCESSING
+    assert first.stage is IngestStage.EMBED
+    assert first.progress["done"] == 0
+    assert first.progress["total"] >= 1
+
+
+def test_status_write_failure_does_not_fail_ingestion(parts: Parts) -> None:
+    class StatusWritesFail(MemoryBlobStore):
+        def put(self, key: str, data: bytes, content_type: str) -> None:
+            if key.startswith("ingest-status/"):
+                raise OSError("disk full")
+            super().put(key, data, content_type)
+
+    blobs = StatusWritesFail(parts.blobs.objects)
+    service = IngestService(
+        blobs=blobs,
+        vision=parts.vision,
+        metadata=parts.metadata,
+        embedder=parts.embedder,
+        index=parts.index,
+    )
+    assert service.ingest("raw/transcript.pdf").outcome is Outcome.INDEXED

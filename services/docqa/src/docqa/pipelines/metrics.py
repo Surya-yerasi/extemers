@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from docqa.domain.agent_trace import AgentTraceStats, agent_trace_stats
+from docqa.domain.judging import ONLINE_METRICS, is_hallucination
 from docqa.domain.retrieval import Strategy
 from docqa.domain.stats import mean, percentile, rate
 from docqa.pipelines.chat import Turn
@@ -95,6 +97,11 @@ class LiveMetrics(BaseModel):
     tokens_by_step: list[TokenStep]
     by_strategy: list[StrategyRow]
     models: dict[str, int]  # generation model -> questions
+    judge: dict[str, float | None]  # sampled LLM-judge scores (make docqa-local-judge)
+    agent: dict[str, float | None]  # agent strategy only
+    conversation: dict[str, float | None]
+    safety: dict[str, float | None]
+    guardrail_rules: dict[str, int]  # rule -> questions where it fired
 
 
 def since_for(window: str, now: datetime) -> datetime | None:
@@ -127,7 +134,7 @@ def _model_calls(turn: Turn) -> int:
 
 
 def _strategy_row(strategy: Strategy, turns: Sequence[Turn]) -> StrategyRow:
-    answered = [t for t in turns if t.result and not t.result.not_found]
+    answered = [t for t in turns if _answered(t)]
     rated = [t for t in turns if t.feedback]
     totals = [t.trace.duration_ms for t in turns]
     ok = [t for t in turns if t.result]
@@ -145,6 +152,97 @@ def _strategy_row(strategy: Strategy, turns: Sequence[Turn]) -> StrategyRow:
     )
 
 
+def _answered(t: Turn) -> bool:
+    return t.result is not None and not t.result.not_found and not t.result.blocked
+
+
+def _judge_metrics(answered: Sequence[Turn]) -> dict[str, float | None]:
+    judged = [t.judge for t in answered if t.judge]
+    out: dict[str, float | None] = {
+        "judged": float(len(judged)),
+        "judge_coverage": rate(len(judged), len(answered)),
+    }
+    for name in ONLINE_METRICS:
+        out[name] = mean([j.scores.get(name) for j in judged])
+    flags = [is_hallucination(j.scores.get("faithfulness")) for j in judged]
+    scored = [f for f in flags if f is not None]
+    out["hallucination_rate"] = rate(sum(scored), len(scored))
+    return out
+
+
+def _agent_metrics(turns: Sequence[Turn]) -> dict[str, float | None]:
+    """Agent turns only. Failed turns count against completion; the rest need a trace."""
+    agent = [t for t in turns if t.strategy == Strategy.AGENT]
+    stats: list[tuple[Turn, AgentTraceStats]] = []
+    for t in agent:
+        st = agent_trace_stats(t.trace) if t.result else None
+        if st is not None:
+            stats.append((t, st))
+    recoverable = [(t, st) for t, st in stats if st.first_search_failed]
+    costs = [t.result.cost.usd for t in agent if t.result]
+    return {
+        "tasks": float(len(agent)),
+        "task_completion_rate": rate(
+            sum(1 for t in agent if _answered(t) and t.feedback != "down"), len(agent)
+        ),
+        "step_count": mean([float(st.steps) for _, st in stats]),
+        "step_count_p95": percentile([float(st.steps) for _, st in stats], 95),
+        "trajectory_efficiency": mean([st.efficiency for _, st in stats]),
+        "search_accuracy": rate(
+            sum(st.grades_sufficient for _, st in stats), sum(st.grades for _, st in stats)
+        ),
+        "error_recovery_rate": rate(
+            sum(1 for t, _ in recoverable if _answered(t)), len(recoverable)
+        ),
+        "cost_per_task": mean(costs),
+        "cost_per_task_p95": percentile(costs, 95),
+    }
+
+
+def _conversation_metrics(turns: Sequence[Turn]) -> dict[str, float | None]:
+    """A conversation is complete when its last question was answered and not rated 👎."""
+    by_conversation: dict[str, list[Turn]] = defaultdict(list)
+    for t in turns:
+        by_conversation[t.turn_id.split(".")[0]].append(t)
+    last = [max(ts, key=lambda t: t.created_at) for ts in by_conversation.values()]
+    rated = [t for t in turns if t.feedback]
+    return {
+        "conversations": float(len(by_conversation)),
+        "turns_per_conversation": mean([float(len(ts)) for ts in by_conversation.values()]),
+        "conversation_completion": rate(
+            sum(1 for t in last if _answered(t) and t.feedback != "down"), len(last)
+        ),
+        "csat": rate(sum(1 for t in rated if t.feedback == "up"), len(rated)),
+        "feedback_coverage": rate(len(rated), sum(1 for t in turns if _answered(t))),
+    }
+
+
+def _safety_metrics(turns: Sequence[Turn]) -> tuple[dict[str, float | None], dict[str, int]]:
+    ok = [t for t in turns if t.result]
+    rules: Counter[str] = Counter()
+    for t in ok:
+        if t.result:
+            rules.update({f.rule for f in t.result.guardrails})
+    return (
+        {
+            "guardrail_violation_rate": rate(
+                sum(1 for t in ok if t.result and t.result.guardrails), len(ok)
+            ),
+            "guardrail_block_rate": rate(
+                sum(1 for t in ok if t.result and t.result.blocked), len(ok)
+            ),
+        },
+        dict(rules.most_common()),
+    )
+
+
+def _peak_per_minute(turns: Sequence[Turn]) -> float | None:
+    if not turns:
+        return None
+    minutes = Counter(t.created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M") for t in turns)
+    return float(max(minutes.values()))
+
+
 def compute_live_metrics(
     turns: Iterable[Turn], window: str, strategy: Strategy | None, now: datetime | None = None
 ) -> LiveMetrics:
@@ -156,8 +254,8 @@ def compute_live_metrics(
         if (since is None or t.created_at >= since) and (strategy is None or t.strategy == strategy)
     ]
     ok = [t for t in selected if t.result is not None]
-    answered = [t for t in ok if t.result and not t.result.not_found]
-    not_found = [t for t in ok if t.result and t.result.not_found]
+    answered = [t for t in ok if _answered(t)]
+    not_found = [t for t in ok if t.result and t.result.not_found and not t.result.blocked]
     rated = [t for t in selected if t.feedback]
     totals = [t.trace.duration_ms for t in selected]
 
@@ -223,6 +321,8 @@ def compute_live_metrics(
         if t.result
     ]
     p50, p95 = percentile(totals, 50), percentile(totals, 95)
+    costs = [t.result.cost.usd for t in ok if t.result]
+    safety, rules = _safety_metrics(selected)
 
     daily: dict[str, list[Turn]] = defaultdict(list)
     for t in selected:
@@ -246,8 +346,10 @@ def compute_live_metrics(
             "latency_p95": p95,
             "latency_p99": percentile(totals, 99),
             "tail_ratio": (p95 / p50) if p50 and p95 else None,
-            "cost_per_question": mean([t.result.cost.usd for t in ok if t.result]),
-            "total_cost": sum(t.result.cost.usd for t in ok if t.result),
+            "cost_per_question": mean(costs),
+            "cost_p95": percentile(costs, 95),
+            "total_cost": sum(costs),
+            "throughput_peak_qpm": _peak_per_minute(selected),
         },
         latency_total_ms=distribution(totals),
         stages=stages,
@@ -307,4 +409,9 @@ def compute_live_metrics(
         models=dict(
             Counter(t.result.models.get("generation", "?") for t in ok if t.result).most_common()
         ),
+        judge=_judge_metrics(answered),
+        agent=_agent_metrics(selected),
+        conversation=_conversation_metrics(selected),
+        safety=safety,
+        guardrail_rules=rules,
     )

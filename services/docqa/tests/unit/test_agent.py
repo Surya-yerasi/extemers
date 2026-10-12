@@ -140,10 +140,13 @@ def test_happy_path_plans_retrieves_grades_generates_verifies() -> None:
     assert model.calls == [("plan", True), ("grade", True), ("generate", False), ("verify", True)]
     assert result.chunks[0].ranks["agent"] == 1
     names = [(s.depth, s.name) for s in result.trace.spans]  # type: ignore[union-attr]
-    assert names[0] == (0, "plan")
+    assert names[0] == (0, "guard_input")  # guardrails run before the agent
+    assert names[1] == (0, "plan")
     assert (0, "retrieve") in names
     assert (1, "embed") in names  # retrieval nested under the agent's retrieve step
-    assert [n for d, n in names if d == 0] == ["plan", "retrieve", "grade", "generate", "verify"]
+    assert [n for d, n in names if d == 0] == [
+        "guard_input", "plan", "retrieve", "grade", "generate", "verify", "guard_output",
+    ]  # fmt: skip
     assert result.tokens["plan_input"] == 100
     assert result.tokens["verify_output"] == 10
     assert result.cost.usd > 0

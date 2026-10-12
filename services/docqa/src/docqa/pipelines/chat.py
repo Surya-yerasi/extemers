@@ -20,6 +20,7 @@ from docqa.domain.conversation import (
     parse_turn_id,
     turn_id,
 )
+from docqa.domain.judging import TurnJudgement
 from docqa.domain.retrieval import Strategy
 from docqa.domain.tracing import Trace, Tracer
 from docqa.pipelines.qa import AskResult, QAService, validate_question
@@ -38,6 +39,7 @@ class Turn(BaseModel):
     trace: Trace
     feedback: Feedback | None = None  # the user's thumbs up/down, if given
     feedback_at: datetime | None = None
+    judge: TurnJudgement | None = None  # set later by sampled online judging (judge-traffic)
 
 
 class Conversation(BaseModel):

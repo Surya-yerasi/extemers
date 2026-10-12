@@ -159,7 +159,11 @@ window.DocqaMetrics = (() => {
   function table(headers, rows, numeric = []) {
     const t = el("table", null, "data-table");
     const head = el("tr");
-    headers.forEach((h, i) => head.append(el("th", h, numeric.includes(i) ? "num" : "")));
+    headers.forEach((h, i) => {
+      const th = el("th", h instanceof Node ? null : h, numeric.includes(i) ? "num" : "");
+      if (h instanceof Node) th.append(h);
+      head.append(th);
+    });
     t.append(el("thead"));
     t.tHead.append(head);
     const body = el("tbody");
@@ -366,12 +370,128 @@ window.DocqaMetrics = (() => {
 
   // ---------------------------------------------------------------- live view
 
+  // The newest eval run that compared strategies (else the newest), for the scorecard.
+  async function latestRun() {
+    try {
+      const runs = await getJSON("/api/metrics/evals");
+      if (!runs.length) return null;
+      const pick = runs.find((r) => r.strategies.length > 1) || runs[0];
+      return await getJSON(`/api/metrics/evals/${encodeURIComponent(pick.run_id)}`);
+    } catch {
+      return null;
+    }
+  }
+
+  // How each scorecard metric is displayed.
+  const MS_KEYS = new Set(["latency_p95"]);
+  const USD_KEYS = new Set(["cost_p95", "cost_per_task"]);
+  const COUNT_KEYS = new Set(["step_count", "throughput_peak_qpm"]);
+  const PCT_KEYS = new Set([
+    "error_rate", "hallucination_rate", "task_completion_rate", "search_accuracy", "error_recovery_rate",
+    "conversation_completion", "csat", "guardrail_violation_rate", "cited_answer_rate",
+  ]); // prettier-ignore
+  function fmtKey(key, v) {
+    if (MS_KEYS.has(key)) return fmt.ms(v);
+    if (USD_KEYS.has(key)) return fmt.usd(v);
+    if (COUNT_KEYS.has(key)) return fmt.num(v, 1);
+    if (PCT_KEYS.has(key)) return fmt.pct(v);
+    return fmt.score(v);
+  }
+
+  // Every metric in one table: where the application stands against a starting target.
+  function scorecard(m) {
+    const run = state.latest;
+    const strategy = state.strategy || "hybrid";
+    const offline = run && (run.summaries.find((x) => x.strategy === strategy) || null);
+    const agentRun = run && run.summaries.find((x) => x.strategy === "agent");
+    const judged = m.judge.judged || 0;
+    const runLabel = run ? `eval ${(run.meta.date || run.run_id).slice(0, 10)} · ${offline ? strategy : "–"}` : "no eval run";
+    const live = `live · ${fmt.num(m.kpis.questions)} questions`;
+    const sample = `judged sample · ${fmt.num(judged)}`;
+    const off = (group, key, s = offline) => (s && s[group] ? s[group][key] : null);
+    // Judge metrics: the live sample when there is one, else the eval run.
+    const judge = (key) => (judged ? [m.judge[key], sample] : [off("judge", key), runLabel]);
+    const rows = [
+      ["Retrieval", "precision@5", off("retrieval", "precision@5"), runLabel],
+      ["Retrieval", "recall@5", off("retrieval", "recall@5"), runLabel],
+      ["Retrieval", "mrr", off("retrieval", "mrr"), runLabel],
+      ["Retrieval", "ndcg@5", off("retrieval", "ndcg@5"), runLabel],
+      ["Generation", "faithfulness", ...judge("faithfulness")],
+      ["Generation", "answer_relevancy", ...judge("answer_relevancy")],
+      ["Generation", "context_precision", ...judge("context_precision")],
+      ["Generation", "context_recall", off("judge", "context_recall"), runLabel],
+      ["Generation", "coherence", ...judge("coherence")],
+      ["Generation", "hallucination_rate", ...(judged ? [m.judge.hallucination_rate, sample] : [off("answers", "hallucination_rate"), runLabel])],
+      ["Agent", "task_completion_rate", m.agent.task_completion_rate, `live · ${fmt.num(m.agent.tasks)} tasks`],
+      ["Agent", "search_accuracy", m.agent.search_accuracy, "live"],
+      ["Agent", "trajectory_efficiency", m.agent.trajectory_efficiency, "live"],
+      ["Agent", "step_count", m.agent.step_count, "live"],
+      ["Agent", "cost_per_task", m.agent.cost_per_task, "live"],
+      ["Agent", "error_recovery_rate", m.agent.error_recovery_rate, "live"],
+      ["Agent", "task_completion_rate", off("agent", "task_completion_rate", agentRun), agentRun ? `${runLabel.split(" ·")[0]} · agent (correct)` : "no agent eval"],
+      ["Chatbot", "answer_relevancy", ...judge("answer_relevancy")],
+      ["Chatbot", "coherence", ...judge("coherence")],
+      ["Chatbot", "conversation_completion", m.conversation.conversation_completion, `live · ${fmt.num(m.conversation.conversations)} conversations`],
+      ["Chatbot", "hallucination_rate", ...(judged ? [m.judge.hallucination_rate, sample] : [off("answers", "hallucination_rate"), runLabel])],
+      ["Chatbot", "csat", m.conversation.csat, `live · coverage ${fmt.pct(m.conversation.feedback_coverage, 0)}`],
+      ["Operations", "latency_p95", m.kpis.latency_p95, live],
+      ["Operations", "cost_p95", m.kpis.cost_p95, live],
+      ["Operations", "throughput_peak_qpm", m.kpis.throughput_peak_qpm, live],
+      ["Operations", "error_rate", m.kpis.error_rate, live],
+      ["Safety", "guardrail_violation_rate", m.safety.guardrail_violation_rate, live],
+    ];
+    const t = el("table", null, "data-table scorecard");
+    const head = el("tr");
+    for (const [h, cls] of [["Area", ""], ["Metric", ""], ["Now", "num"], ["Target", "num"], ["Status", ""], ["Source", ""]]) head.append(el("th", h, cls));
+    t.append(el("thead"));
+    t.tHead.append(head);
+    const tbody = el("tbody");
+    let previous = "";
+    for (const [area, key, value, source] of rows) {
+      const meta = state.glossary[key] || { name: key, better: "context" };
+      const tr = el("tr", null, area !== previous ? "area-start" : "");
+      tr.append(el("td", area !== previous ? area : "", "area"));
+      previous = area;
+      const name = el("td");
+      name.append(headerWithInfo(key));
+      tr.append(name, el("td", fmtKey(key, value), "num"));
+      const target = meta.target;
+      const lower = meta.better === "lower";
+      tr.append(el("td", target === null || target === undefined ? "–" : `${lower ? "≤" : "≥"} ${fmtKey(key, target)}`, "num"));
+      let status = ["–", "no data", "neutral"];
+      if (value !== null && value !== undefined) {
+        if (target === null || target === undefined) status = ["·", "for context", "neutral"];
+        else if (lower ? value <= target : value >= target) status = ["✓", "on target", "good"];
+        else status = ["⚠", lower ? "above target" : "below target", "warning"];
+      }
+      const badge = el("span", null, `state-badge tone-${status[2]}`);
+      const icon = el("span", status[0], "state-icon");
+      icon.setAttribute("aria-hidden", "true");
+      badge.append(icon, el("span", status[1]));
+      const st = el("td");
+      st.append(badge);
+      tr.append(st, el("td", source, "muted small"));
+      tbody.append(tr);
+    }
+    t.append(tbody);
+    const sec = section(
+      "Scorecard: where the application stands",
+      "Every metric in one place, against a starting target (set your own once you have a baseline). Live rows come from your traffic; judge rows from the sampled LLM judge (make docqa-local-judge) or, without one, the latest eval run; retrieval rows from the latest eval run, for the strategy picked above (hybrid by default). Small samples are noisy: check the source column.",
+    );
+    const wrap = el("div", null, "table-wrap-x");
+    wrap.append(t);
+    sec.append(wrap);
+    return sec;
+  }
+
   async function loadLive() {
     const qs = new URLSearchParams({ window: state.window });
     if (state.strategy) qs.set("strategy", state.strategy);
     $("metrics-body").classList.add("refreshing");
     try {
-      state.live = await getJSON(`/api/metrics/live?${qs}`);
+      const [live, offline] = await Promise.all([getJSON(`/api/metrics/live?${qs}`), latestRun()]);
+      state.live = live;
+      state.latest = offline;
       $("metrics-updated").textContent = `Updated ${new Date(state.live.generated_at).toLocaleTimeString()}`;
       renderLive();
     } catch (err) {
@@ -398,16 +518,23 @@ window.DocqaMetrics = (() => {
       tile("answer_rate", fmt.pct(k.answer_rate)),
       tile("not_found_rate", fmt.pct(k.not_found_rate)),
       tile("error_rate", fmt.pct(k.error_rate)),
-      tile("helpful_rate", fmt.pct(k.helpful_rate), `coverage ${fmt.pct(k.feedback_coverage, 0)}`),
+      tile("csat", fmt.pct(k.helpful_rate), `coverage ${fmt.pct(k.feedback_coverage, 0)}`),
       tile("latency_p50", fmt.ms(k.latency_p50)),
       tile("latency_p95", fmt.ms(k.latency_p95), `P99 ${fmt.ms(k.latency_p99)} · tail ×${fmt.num(k.tail_ratio, 1)}`),
       tile("cost_per_question", fmt.usd(k.cost_per_question), `total ${fmt.usd(k.total_cost)}`),
     );
     intro.append(kpis);
     body.append(intro);
+    body.append(scorecard(m));
 
     // Latency
-    const lat = section("Latency: where the time goes", null, "stage_latency");
+    const lat = section("Operations: latency, cost and throughput", null, "stage_latency");
+    const ops = el("div", null, "tiles");
+    ops.append(
+      tile("cost_p95", fmt.usd(k.cost_p95), `mean ${fmt.usd(k.cost_per_question)}`),
+      tile("throughput_peak_qpm", `${fmt.num(k.throughput_peak_qpm)} / min`, "busiest minute"),
+    );
+    lat.append(ops);
     const stageRows = m.stages.map((s) => ({
       label: s.depth ? `↳ ${s.name}` : s.name,
       depth: s.depth,
@@ -452,6 +579,23 @@ window.DocqaMetrics = (() => {
     ret.append(rt);
     body.append(ret);
 
+    // Generation quality: the sampled LLM judge
+    const j = m.judge;
+    const jq = section("Generation quality (LLM judge, sampled)", j.judged ? `Scores from the background judge on ${fmt.num(j.judged)} of your answers (${fmt.pct(j.judge_coverage, 0)} of answered questions in this window). Score more with make docqa-local-judge.` : "No judged answers in this window yet. Run make docqa-local-judge: it scores your recent answers in the background with the local model and stores the scores on each trace.");
+    if (j.judged) {
+      const jt = el("div", null, "tiles");
+      jt.append(
+        tile("faithfulness", fmt.score(j.faithfulness)),
+        tile("answer_relevancy", fmt.score(j.answer_relevancy)),
+        tile("context_precision", fmt.score(j.context_precision)),
+        tile("coherence", fmt.score(j.coherence)),
+        tile("hallucination_rate", fmt.pct(j.hallucination_rate), "faithfulness below 1"),
+        tile("judge_coverage", fmt.pct(j.judge_coverage, 0), `${fmt.num(j.judged)} judged`),
+      );
+      jq.append(jt);
+    }
+    body.append(jq);
+
     // Generation & inference
     const g = m.generation;
     const gen = section("Generation and inference");
@@ -480,6 +624,51 @@ window.DocqaMetrics = (() => {
     const models = Object.entries(m.models);
     if (models.length) gen.append(table(["Answer model", "Questions"], models.map(([name, n]) => [name, fmt.num(n)]), [1]));
 
+    // Agent
+    const a = m.agent;
+    const ag = section("Agent", a.tasks ? "The agent strategy only: does it finish, how directly, and does its retry loop pay off? Offline task completion (correct answers) is in Offline evaluation." : "No agent questions in this window. Pick 'Agent' in the Chat tab's retrieval menu to see these.");
+    if (a.tasks) {
+      const at = el("div", null, "tiles");
+      at.append(
+        tile("task_completion_rate", fmt.pct(a.task_completion_rate), `${fmt.num(a.tasks)} tasks`),
+        tile("search_accuracy", fmt.pct(a.search_accuracy)),
+        tile("step_count", fmt.num(a.step_count, 1), `P95 ${fmt.num(a.step_count_p95)}`),
+        tile("trajectory_efficiency", fmt.score(a.trajectory_efficiency)),
+        tile("error_recovery_rate", fmt.pct(a.error_recovery_rate)),
+        tile("cost_per_task", fmt.usd(a.cost_per_task), `P95 ${fmt.usd(a.cost_per_task_p95)}`),
+      );
+      ag.append(at);
+    }
+    body.append(ag);
+
+    // Conversation (chatbot)
+    const c = m.conversation;
+    const cv = section("Conversation", "Chatbot-level outcomes: did people leave with what they came for, and were they satisfied?");
+    const ct = el("div", null, "tiles");
+    ct.append(
+      tile("conversations", fmt.num(c.conversations)),
+      tile("turns_per_conversation", fmt.num(c.turns_per_conversation, 1)),
+      tile("conversation_completion", fmt.pct(c.conversation_completion)),
+      tile("csat", fmt.pct(c.csat), `coverage ${fmt.pct(c.feedback_coverage, 0)}`),
+    );
+    cv.append(ct);
+    body.append(cv);
+
+    // Safety
+    const sf = m.safety;
+    const rules = m.guardrail_rules;
+    const sa = section("Safety (guardrails)", "Rule-based checks on every question and answer: injections are blocked, ID numbers redacted, uncited answers flagged. Each finding is on the question's trace (guard_input / guard_output).");
+    const stl = el("div", null, "tiles");
+    stl.append(
+      tile("guardrail_violation_rate", fmt.pct(sf.guardrail_violation_rate)),
+      tile("guardrail_block_rate", fmt.pct(sf.guardrail_block_rate)),
+      tile("prompt_injection", fmt.num(rules.prompt_injection || 0), "questions blocked"),
+      tile("sensitive_id", fmt.num(rules.sensitive_id || 0), "answers redacted"),
+      tile("uncited_answer", fmt.num(rules.uncited_answer || 0), "answers flagged"),
+    );
+    sa.append(stl);
+    body.append(sa);
+
     // By strategy
     const by = section("By strategy", "Same traffic, split by retrieval strategy. Small groups are noisy: compare strategies properly in Offline evaluation.");
     by.append(
@@ -495,8 +684,9 @@ window.DocqaMetrics = (() => {
   // ---------------------------------------------------------------- offline view
 
   const RETRIEVAL_KEYS = ["hit@1", "hit@5", "recall@5", "precision@5", "mrr", "ndcg@5"];
-  const ANSWER_KEYS = ["correct", "refusal_accuracy", "false_refusal_rate", "citation_hit", "citation_precision"];
-  const JUDGE_KEYS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall", "answer_correctness"];
+  const ANSWER_KEYS = ["correct", "refusal_accuracy", "false_refusal_rate", "hallucination_rate", "citation_hit", "citation_precision"];
+  const JUDGE_KEYS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall", "answer_correctness", "coherence"];
+  const AGENT_KEYS = ["task_completion_rate", "search_accuracy", "step_count", "trajectory_efficiency", "error_recovery_rate", "cost_per_task"];
 
   async function loadOffline() {
     try {
@@ -518,7 +708,7 @@ window.DocqaMetrics = (() => {
   function headerWithInfo(key) {
     const th = el("span", null, "th-info");
     const meta = state.glossary[key];
-    th.append(document.createTextNode(meta ? meta.name.replace(/ \(.*\)$/, "") : key));
+    th.append(document.createTextNode(meta ? meta.name.replace(/ \([^()]*\)$/, "") : key));
     const i = info(key);
     if (i) th.append(i);
     return th;
@@ -592,13 +782,26 @@ window.DocqaMetrics = (() => {
 
     if (s.some((x) => x.answers && Object.keys(x.answers).length)) {
       const ans = section("Answer quality", "Deterministic checks against expected facts, abstentions and citations.");
-      ans.append(metricTable(s, ANSWER_KEYS, "answers", ["false_refusal_rate"]));
+      ans.append(metricTable(s, ANSWER_KEYS, "answers", ["false_refusal_rate", "hallucination_rate"]));
       body.append(ans);
     }
     if (s.some((x) => x.judge && Object.keys(x.judge).length)) {
       const judge = section("LLM judge (RAGAS)", "Scored by a language model: tolerant of wording, but biased and noisy. Trust large differences, spot-check small ones.");
       judge.append(metricTable(s, JUDGE_KEYS.filter((k) => s.some((x) => x.judge && x.judge[k] !== undefined)), "judge"));
       body.append(judge);
+    }
+
+    const agentRows = s.filter((x) => x.agent && Object.keys(x.agent).length);
+    if (agentRows.length) {
+      const ag = section("Agent", "Scored on the golden set: task completion is answering correctly; error recovery counts retries that ended in a correct answer.");
+      ag.append(
+        table(
+          ["Strategy", ...AGENT_KEYS.map((key) => headerWithInfo(key))],
+          agentRows.map((x) => [strategyCell(x.strategy), ...AGENT_KEYS.map((key) => fmtKey(key, x.agent[key]))]),
+          AGENT_KEYS.map((_, i) => i + 1),
+        ),
+      );
+      body.append(ag);
     }
 
     const perf = section("Latency and cost in the eval run");
