@@ -1,6 +1,9 @@
 """BlobStore over a local directory, for local mode: documents never leave the laptop."""
 
+from datetime import UTC, datetime
 from pathlib import Path
+
+from docqa.domain.documents import BlobInfo
 
 
 class LocalBlobStore:
@@ -36,3 +39,11 @@ class LocalBlobStore:
             for p in base.rglob("*")
             if p.is_file() and not p.name.startswith(".")
         )
+
+    def list_objects(self, prefix: str) -> list[BlobInfo]:
+        objects = []
+        for key in self.list_keys(prefix):
+            stat = self._path(key).stat()
+            modified = datetime.fromtimestamp(stat.st_mtime, UTC)
+            objects.append(BlobInfo(key=key, size=stat.st_size, modified=modified))
+        return objects

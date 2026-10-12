@@ -8,8 +8,8 @@ DOCQA := services/docqa
 .PHONY: help install tf-fmt tf-validate tf-init tf-plan tf-apply tf-destroy \
         docqa-install docqa-check docqa-build docqa-run docqa-dev \
         docqa-samples docqa-upload-samples docqa-ingest docqa-stats docqa-ask \
-        docqa-local-models docqa-local-samples docqa-local-ingest docqa-local-stats \
-        docqa-local-ask docqa-local-dev docqa-local-eval docqa-eval \
+        docqa-local-models docqa-local-samples docqa-local-ingest docqa-local-prune docqa-local-stats \
+        docqa-local-ask docqa-local-dev docqa-local-eval docqa-local-judge docqa-eval \
         audit-tags nuke-orphans docs-diagrams clean
 
 help: ## Show targets
@@ -91,10 +91,13 @@ docqa-local-models: ## Local mode: check Ollama is running and pull any missing 
 	@ollama list
 
 docqa-local-samples: ## Local mode: copy the synthetic documents into .data/raw/samples/
-	mkdir -p $(DOCQA)/.data/raw/samples && cp $(DOCQA)/samples/synthetic/* $(DOCQA)/.data/raw/samples/
+	mkdir -p $(DOCQA)/.data/raw/samples && cp -p $(DOCQA)/samples/synthetic/* $(DOCQA)/.data/raw/samples/
 
 docqa-local-ingest: ## Local mode: ingest .data/raw/ (put your own files there too), or KEYS="raw/a.pdf"
 	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli ingest $(KEYS)
+
+docqa-local-prune: ## Local mode: remove indexed documents whose file was deleted from .data/raw/
+	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli prune
 
 docqa-local-stats: ## Local mode: number of chunks in the local index
 	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli stats
@@ -116,6 +119,10 @@ EVAL_ARGS = $(if $(STRATEGIES),--strategies $(STRATEGIES)) $(if $(LIMIT),--limit
 docqa-local-eval: ## Local mode: golden set through the strategies; report under .data/evals/
 	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli eval \
 	  $(EVAL_ARGS) $(if $(STRATEGIES),,--strategies dense,bm25,hybrid)
+
+docqa-local-judge: ## Local mode: LLM-judge recent live answers [WINDOW=7d LIMIT=20 RESCORE=1]
+	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli judge-traffic \
+	  --window $(or $(WINDOW),7d) --limit $(or $(LIMIT),20) $(if $(RESCORE),--rescore)
 
 docqa-eval: ## Bedrock: golden set against the deployed index (costs cents); report under .data/evals/
 	cd $(DOCQA) && DOCQA_DOCS_BUCKET=$(DOCQA_BUCKET) AWS_REGION=us-east-1 \

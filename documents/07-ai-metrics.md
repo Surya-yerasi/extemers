@@ -16,6 +16,14 @@ An LLM application can fail at any of four layers. Each layer needs its own metr
 | **Retrieval** | Did the right evidence reach the model? | hit@k, recall@k, precision@k, MRR, nDCG (offline); top-1 similarity, margin (online) |
 | **Generation** | Is the answer correct, grounded and useful? | correctness, refusal accuracy, citations, faithfulness (offline); abstention, cited-answer rate, 👍 (online) |
 
+Three more views sit on top of these four:
+- **Agent:** does the agent finish its task, how directly, and does its retry loop pay off? (§10)
+- **Conversation:** did the user leave with what they came for, and were they satisfied? (§11)
+- **Safety:** were attacks blocked and identifiers kept out of answers? (§12)
+
+The Metrics tab opens with a **scorecard** that puts one row per metric from every layer
+against a starting target, so you can see where the application stands at a glance.
+
 The layers multiply. If retrieval misses the evidence, no model can answer correctly: hit@5
 is an **upper bound** on answer quality. That is why RAG teams debug bottom-up.
 
@@ -165,7 +173,9 @@ How teams get trustworthy comparisons:
 | Abstention, citations, similarity signals | Drift monitors on these signals with alarms; topic clustering of questions |
 | 👍/👎 per answer, linked to traces | A/B tests with guardrail metrics; human review queues sampled from traffic |
 | Offline retrieval and answer metrics, LLM judge | Larger, versioned golden sets; per-category release gates in CI |
-| Error rate, CloudWatch alarms (deployed) | Safety metrics: PII leakage, prompt-injection attempts, toxicity, policy violations |
+| Error rate, CloudWatch alarms (deployed) | Model-based safety classifiers (toxicity, jailbreak detection, PII), policy violation reviews |
+| Rule-based guardrails with violation and block rates | Red-team test sets run in CI; per-rule false-positive review |
+| A sampled LLM judge on live answers | Judge calibration sets; per-segment (topic, user type) quality dashboards |
 
 **Online metrics are computed from stored traces.** That is ideal for learning, and fine for
 one user. At scale you would aggregate as you write (CloudWatch EMF metrics, which docqa
@@ -180,3 +190,69 @@ already emits, or a metrics pipeline), and keep traces for drill-down only.
 4. **Before changing anything** (model, prompt, chunking, strategy): run
    `make docqa-local-eval` and compare the runs in *Offline evaluation → Across runs*. Ship only
    changes that beat the noise.
+
+## 10. Agent metrics
+
+An agent is judged on the **task**, not the single answer. docqa's agent runs
+plan → search → grade → (search → grade) → answer → (verify), and every step is a span in the
+trace, so these metrics are read straight from traces.
+
+| Metric | docqa definition | Watch for |
+|---|---|---|
+| **Task completion rate** | Online: answered and not rated 👎. Offline: answered correctly | The bottom line; read it next to cost |
+| **Tool call accuracy** | The agent has one tool (search), so tool *choice* is always right. What can go wrong is the query, so this is **search accuracy**: the share of searches its grader accepted | Low values mean poor planner queries, or documents that lack the answer |
+| **Step count** (mean, P95) | Top-level agent steps per task | A rising P95 means some tasks loop |
+| **Trajectory efficiency** | Fewest possible steps (4, or 5 with verify) ÷ steps taken | 1.0 means the first search was enough |
+| **Error recovery rate** | Of tasks whose first search failed, the share the retry rescued | Whether the retry loop earns its cost |
+| **Cost per task** (mean, P95) | Model cost of all steps | The price side of the agent trade-off |
+
+Read efficiency and recovery together: a retry lowers efficiency but may be what saved the
+answer. A good agent has high recovery and high efficiency (few retries needed).
+
+## 11. Chatbot metrics
+
+| Metric | Definition | Notes |
+|---|---|---|
+| **Response relevance** | Same as answer relevance (§5) | Counted once |
+| **Coherence** | A judge scores clarity and consistency 1-5 against a rubric (shown as 0-1) | Low signal for short cited answers; judges also confuse "unhelpful" with "incoherent" |
+| **Conversation completion** | Share of conversations whose last question was answered and not rated 👎 | A proxy: users also leave satisfied after "not found", or give up mid-way |
+| **Hallucination rate** | Share of answers with at least one unsupported claim (faithfulness < 1); offline it also counts answering an unanswerable question | Strict by design; read the traces behind it |
+| **CSAT** | Share of 👍 among rated answers (a two-point CSAT) | Classic CSAT asks 1-5 and counts 4-5; same idea |
+
+## 12. Guardrails and safety
+
+Rule-based checks run on every question and answer, each recorded as a span
+(`guard_input`, `guard_output`) with what fired:
+
+| Rule | Stage | Action |
+|---|---|---|
+| `prompt_injection` | question | **blocked**: no retrieval, no model call ("ignore previous instructions", "show your system prompt") |
+| `sensitive_id` | answer | **redacted**: SSN-shaped and Luhn-valid card numbers become `[redacted]` |
+| `uncited_answer` | answer | **flagged**: an answer with no citation |
+
+**Guardrail violation rate** = questions with any finding ÷ questions; **block rate** = blocked
+÷ questions. Rules are cheap and explainable but miss rephrased attacks and can misfire; that
+is why production adds model-based classifiers (e.g. Bedrock Guardrails) and reviews findings.
+
+## 13. Judging live traffic
+
+The LLM judge needs no answer key for **faithfulness, answer relevance, context precision**
+(judged against the answer instead of a reference) and **coherence**, so it can score real
+answers. **Context recall** and **answer correctness** need a reference and stay offline.
+
+Judging an answer costs several model calls (about 35 s per answer locally), so teams **sample
+and score asynchronously** instead of judging inline:
+
+```bash
+make docqa-local-judge                 # the newest 20 unjudged answers from the last 7 days
+make docqa-local-judge WINDOW=all LIMIT=50 RESCORE=1
+```
+
+Scores are stored on each question next to its trace; the Metrics tab averages them and shows
+**judge coverage** (how much of the traffic the sample covers). With fewer than ~30 judged
+answers, treat the averages as direction, not measurement.
+
+**A real example from the first run (2026-10-12):** "What is GPA?" was answered from the
+model's general knowledge ("Grade Point Average is…") while citing three transcripts that do not
+define it. The judge scored context precision 0 and faithfulness 0.67: a hallucination with
+real-looking citations, invisible to every deterministic metric.

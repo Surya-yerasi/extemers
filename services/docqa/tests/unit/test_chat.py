@@ -33,7 +33,8 @@ def test_follow_up_is_rewritten_with_history_and_searched_as_standalone() -> Non
     assert turn.result is not None
     assert turn.result.standalone_question == "What was my master's GPA?"
     assert generator.prompts[-1].endswith("Question: What was my master's GPA?")
-    rewrite = turn.trace.spans[0]
+    assert turn.trace.spans[0].name == "guard_input"
+    rewrite = turn.trace.spans[1]
     assert rewrite.name == "rewrite"
     assert rewrite.attributes["standalone_question"] == "What was my master's GPA?"
     assert turn.result.tokens["rewrite_input"] == 200

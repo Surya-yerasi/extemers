@@ -6,6 +6,7 @@ Function URL requests to it unchanged, so local and deployed behaviour match.
 
 import json
 import os
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -37,6 +38,7 @@ from docqa.pipelines.chat import (
     Turn,
     TurnFailedError,
 )
+from docqa.pipelines.documents import DocumentDetail, DocumentService, DocumentsOverview
 from docqa.pipelines.metrics import LiveMetrics, compute_live_metrics, since_for
 from docqa.pipelines.qa import MAX_QUESTION_CHARS
 from docqa.ports import ModelUnavailableError
@@ -405,6 +407,40 @@ def get_eval_run(run_id: str, request: Request, user: CurrentUser) -> EvalRun:
     return run
 
 
+# ------------------------------------------------------------------ documents
+
+DOC_ID = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _documents(request: Request) -> DocumentService:
+    if request.app.state.documents is None:
+        try:
+            request.app.state.documents = request.app.state.documents_factory(
+                _config(request).docs_bucket
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "no document storage configured"
+            ) from exc
+    service: DocumentService = request.app.state.documents
+    return service
+
+
+@router.get("/api/documents")
+def list_documents(request: Request, user: CurrentUser) -> DocumentsOverview:
+    """Every document with its live ingestion state. The page polls this."""
+    return _documents(request).overview()
+
+
+@router.get("/api/documents/{doc_id}")
+def get_document(doc_id: str, request: Request, user: CurrentUser) -> DocumentDetail:
+    """One document, with the chunks retrieval searches (your own text, shown to you)."""
+    detail = _documents(request).document(doc_id) if DOC_ID.match(doc_id) else None
+    if detail is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
+    return detail
+
+
 @router.get("/api/traces/{trace_id}")
 def get_trace(trace_id: str, request: Request, user: CurrentUser) -> Turn:
     try:
@@ -439,6 +475,12 @@ def _default_eval_runs_factory(bucket: str | None) -> EvalRunStore:
     return build_eval_run_store(QASettings(), bucket)
 
 
+def _default_documents_factory(bucket: str | None) -> DocumentService:
+    from docqa.pipelines.wiring import build_document_service  # noqa: PLC0415
+
+    return build_document_service(QASettings(), bucket)
+
+
 def _default_metrics(config: AppConfig) -> TurnMetrics:
     if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):  # only Lambda ships stdout to CloudWatch
         return EmfMetrics({"service": "docqa-web", "environment": config.environment})
@@ -453,6 +495,7 @@ def create_app(  # noqa: PLR0913 - every dependency is injectable for tests
     chat: ChatService | None = None,
     metrics: TurnMetrics | None = None,
     eval_runs: EvalRunStore | None = None,
+    documents: DocumentService | None = None,
 ) -> FastAPI:
     """Build the app. Dependencies are injectable for tests; defaults come from config."""
     config = config or get_config()
@@ -466,6 +509,8 @@ def create_app(  # noqa: PLR0913 - every dependency is injectable for tests
     app.state.chat_factory = _default_chat_factory
     app.state.eval_runs = eval_runs
     app.state.eval_runs_factory = _default_eval_runs_factory
+    app.state.documents = documents
+    app.state.documents_factory = _default_documents_factory
     app.state.metrics = metrics or _default_metrics(config)
     app.middleware("http")(_security_headers)
     app.add_exception_handler(NotAuthenticatedError, _not_authenticated)

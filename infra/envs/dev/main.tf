@@ -57,8 +57,8 @@ module "docqa_web" {
   additional_policy_json = data.aws_iam_policy_document.docqa_web.json
 }
 
-# The web function answers questions: read-only on the index, read/write on conversations/,
-# no access to raw/ or parsed/ contents.
+# The web function answers questions: read-only on the index and ingest-status/, read/write on
+# conversations/, no access to raw/ or parsed/ contents (the Documents tab lists raw/ names only).
 data "aws_iam_policy_document" "docqa_web" {
   statement {
     sid       = "ReadOwnConfig"
@@ -70,6 +70,12 @@ data "aws_iam_policy_document" "docqa_web" {
     sid       = "ReadIndex"
     actions   = ["s3:GetObject"]
     resources = ["${module.docqa_bucket.bucket_arn}/lancedb/*"]
+  }
+
+  statement {
+    sid       = "ReadIngestStatus"
+    actions   = ["s3:GetObject"]
+    resources = ["${module.docqa_bucket.bucket_arn}/ingest-status/*"]
   }
 
   statement {
@@ -150,9 +156,13 @@ data "aws_iam_policy_document" "docqa_ingest" {
   }
 
   statement {
-    sid       = "ReadWriteDerivedData"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = ["${module.docqa_bucket.bucket_arn}/parsed/*", "${module.docqa_bucket.bucket_arn}/lancedb/*"]
+    sid     = "ReadWriteDerivedData"
+    actions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = [
+      "${module.docqa_bucket.bucket_arn}/parsed/*",
+      "${module.docqa_bucket.bucket_arn}/lancedb/*",
+      "${module.docqa_bucket.bucket_arn}/ingest-status/*",
+    ]
   }
 
   # Unconditional: see the web policy. With a prefix condition, the "already parsed?" check

@@ -1,6 +1,7 @@
 // docqa: conversations (Chat tab) and per-question traces (Traces tab).
 // All model and document text is inserted with textContent, never as HTML.
 // Routes: #/  (new conversation)  #/c/<conversation id>  #/traces  #/t/<trace id>
+// (#/metrics/... and #/documents/... are handled by metrics.js and documents.js)
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -78,17 +79,25 @@ function errorDetail(data, fallback) {
 
 function route() {
   const hash = window.location.hash || "#/";
-  const [, kind, id] = hash.match(/^#\/(c|t|traces|metrics)?\/?(.*)$/) || [];
+  const [, kind, id] = hash.match(/^#\/(c|t|traces|metrics|documents)?\/?(.*)$/) || [];
   const traces = kind === "t" || kind === "traces";
   const metrics = kind === "metrics";
-  $("view-chat").hidden = traces || metrics;
+  const documents = kind === "documents";
+  $("view-chat").hidden = traces || metrics || documents;
   $("view-traces").hidden = !traces;
   $("view-metrics").hidden = !metrics;
-  $("tab-chat").classList.toggle("active", !traces && !metrics);
+  $("view-documents").hidden = !documents;
+  $("tab-chat").classList.toggle("active", !traces && !metrics && !documents);
   $("tab-traces").classList.toggle("active", traces);
   $("tab-metrics").classList.toggle("active", metrics);
+  $("tab-documents").classList.toggle("active", documents);
   const tip = $("viz-tip");
   if (tip) tip.hidden = true;
+  if (documents) {
+    window.DocqaDocuments.show(id);
+    return;
+  }
+  window.DocqaDocuments.hide(); // stop polling when the tab is not shown
   if (metrics) {
     window.DocqaMetrics.show(id || "live");
     return;

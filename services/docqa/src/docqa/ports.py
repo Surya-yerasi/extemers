@@ -6,6 +6,7 @@ from typing import Protocol, TypeVar
 from pydantic import BaseModel
 
 from docqa.domain.conversation import ConversationSummary
+from docqa.domain.documents import BlobInfo, IndexedChunk, IndexedDocument
 from docqa.domain.models import Chunk, DocMetadata, ParsedDocument
 from docqa.domain.retrieval import RetrievedChunk
 
@@ -21,6 +22,9 @@ class BlobStore(Protocol):
     def exists(self, key: str) -> bool: ...
     def delete(self, key: str) -> None: ...
     def list_keys(self, prefix: str) -> list[str]: ...
+    def list_objects(self, prefix: str) -> list[BlobInfo]:
+        """Keys with size and last-modified time (a listing; never reads the contents)."""
+        ...
 
 
 class VisionTranscriber(Protocol):
@@ -52,6 +56,13 @@ class ChunkSearcher(Protocol):
 
     def vector_search(self, vector: Sequence[float], limit: int) -> list[RetrievedChunk]: ...
     def text_search(self, query: str, limit: int) -> list[RetrievedChunk]: ...
+
+
+class DocumentCatalog(Protocol):
+    """Read-only view of what the index holds, per document."""
+
+    def documents(self) -> list[IndexedDocument]: ...
+    def chunks(self, doc_id: str) -> list[IndexedChunk]: ...
 
 
 class Reranker(Protocol):

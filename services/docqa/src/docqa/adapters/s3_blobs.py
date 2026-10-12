@@ -3,6 +3,8 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+from docqa.domain.documents import BlobInfo
+
 
 class S3BlobStore:
     """BlobStore over one bucket. Objects inherit the bucket's default SSE-KMS encryption."""
@@ -37,3 +39,15 @@ class S3BlobStore:
         ):
             keys.extend(obj["Key"] for obj in page.get("Contents", []))
         return keys
+
+    def list_objects(self, prefix: str) -> list[BlobInfo]:
+        objects: list[BlobInfo] = []
+        for page in self._s3.get_paginator("list_objects_v2").paginate(
+            Bucket=self._bucket, Prefix=prefix
+        ):
+            objects.extend(
+                BlobInfo(key=o["Key"], size=o["Size"], modified=o["LastModified"])
+                for o in page.get("Contents", [])
+                if not o["Key"].endswith("/")  # console-created "folders"
+            )
+        return objects

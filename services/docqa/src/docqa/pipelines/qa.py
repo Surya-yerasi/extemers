@@ -26,6 +26,7 @@ from docqa.domain.conversation import (
     parse_rewrite,
 )
 from docqa.domain.costs import CostEstimate, rerank_cost, token_cost
+from docqa.domain.guardrails import BLOCKED_MESSAGE, Finding, check_input, check_output
 from docqa.domain.retrieval import RetrievedChunk, Strategy, rrf_fuse
 from docqa.domain.tracing import Trace, Tracer
 from docqa.ports import ChunkSearcher, Embedder, Generator, Reranker
@@ -58,6 +59,8 @@ class AskResult(BaseModel):
     models: dict[str, str]
     standalone_question: str = ""  # what was searched for (differs after a rewrite)
     trace: Trace | None = None
+    blocked: bool = False  # refused by an input guardrail: no retrieval, no model call
+    guardrails: list[Finding] = Field(default_factory=list)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -189,6 +192,15 @@ class QAService:
         tokens: dict[str, int] = {}
         cost = CostEstimate()
 
+        with tracer.span("guard_input") as span:
+            findings = check_input(question)
+            span.set(findings=[f.rule for f in findings])
+        if any(f.action == "blocked" for f in findings):
+            return self._result(
+                strategy, BLOCKED_MESSAGE, True, [], [], tokens, cost, question, tracer,
+                findings=findings, blocked=True,
+            )  # fmt: skip
+
         standalone = question
         if history:  # a follow-up: make it searchable on its own
             with tracer.span(
@@ -223,8 +235,9 @@ class QAService:
             citations = outcome.answer.citations
             tracer.set(agent_queries=outcome.queries)
             return self._result(
-                strategy, answer, not_found, citations, chunks, tokens, cost, standalone, tracer
-            )
+                strategy, answer, not_found, citations, chunks, tokens, cost, standalone, tracer,
+                findings=findings,
+            )  # fmt: skip
 
         retrieval = self.retrieve(standalone, strategy, tracer)
         tokens.update(retrieval.tokens)
@@ -267,6 +280,7 @@ class QAService:
             cost,
             standalone,
             tracer,
+            findings=findings,
         )
 
     def _result(  # noqa: PLR0913, PLR0917 - assembles every field of the result
@@ -280,11 +294,20 @@ class QAService:
         cost: CostEstimate,
         standalone: str,
         tracer: Tracer,
+        *,
+        findings: Sequence[Finding] = (),
+        blocked: bool = False,
     ) -> AskResult:
         models = {"embedding": self._embedding_model_id, "generation": self._generator.model_id}
         if strategy == Strategy.HYBRID_RERANK:
             models["rerank"] = self._reranker.model_id
-        tracer.set(not_found=not_found, cost_usd=cost.usd)
+        findings = list(findings)
+        if not blocked:
+            with tracer.span("guard_output") as span:
+                answer, output_findings = check_output(answer, not_found, len(citations))
+                span.set(findings=[f.rule for f in output_findings])
+            findings.extend(output_findings)
+        tracer.set(not_found=not_found, cost_usd=cost.usd, guardrails=[f.rule for f in findings])
         trace = tracer.finish()
         return AskResult(
             strategy=strategy,
@@ -298,6 +321,8 @@ class QAService:
             models=models,
             standalone_question=standalone,
             trace=trace,
+            blocked=blocked,
+            guardrails=findings,
         )
 
 

@@ -7,7 +7,7 @@ the sidebar needs one read, not one per conversation.
 """
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from pydantic import TypeAdapter
 
@@ -64,6 +64,12 @@ class BlobConversationStore:
         self._blobs.delete(self._key(owner, conversation_id))
         remaining = [s for s in self.list(owner) if s.conversation_id != conversation_id]
         self._write_index(owner, remaining)
+
+    def all(self) -> Iterator[Conversation]:
+        """Every user's conversations: for offline jobs (online judging), never the web app."""
+        for key in self._blobs.list_keys(PREFIX):
+            if key.endswith(".json") and not key.endswith("/index.json"):
+                yield Conversation.model_validate_json(self._blobs.get(key))
 
     def _write_index(self, owner: str, summaries: Sequence[ConversationSummary]) -> None:
         newest_first = sorted(summaries, key=lambda s: s.updated_at, reverse=True)

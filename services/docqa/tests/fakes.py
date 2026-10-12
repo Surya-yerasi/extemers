@@ -1,9 +1,11 @@
 """In-memory implementations of the ports, for pipeline tests."""
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from docqa.domain.conversation import REWRITE_SYSTEM
+from docqa.domain.documents import BlobInfo
 from docqa.domain.models import Chunk, DocMetadata, ParsedDocument
 from docqa.domain.retrieval import RetrievedChunk, ranked
 from docqa.ports import Generation
@@ -15,6 +17,7 @@ if TYPE_CHECKING:
 class MemoryBlobStore:
     def __init__(self, objects: dict[str, bytes] | None = None) -> None:
         self.objects = dict(objects or {})
+        self.modified: dict[str, datetime] = {}  # set per key in tests; default below
 
     def get(self, key: str) -> bytes:
         return self.objects[key]
@@ -30,6 +33,13 @@ class MemoryBlobStore:
 
     def list_keys(self, prefix: str) -> list[str]:
         return sorted(k for k in self.objects if k.startswith(prefix))
+
+    def list_objects(self, prefix: str) -> list[BlobInfo]:
+        default = datetime(2026, 1, 1, tzinfo=UTC)
+        return [
+            BlobInfo(key=k, size=len(self.objects[k]), modified=self.modified.get(k, default))
+            for k in self.list_keys(prefix)
+        ]
 
 
 class FakeVision:

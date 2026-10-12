@@ -212,7 +212,9 @@ def test_ask_starts_a_conversation_with_a_traced_turn(
     assert turn["result"]["trace"] is None  # stored once, on the turn
     trace = turn["trace"]
     assert trace["trace_id"] == turn["turn_id"]
-    assert [s["name"] for s in trace["spans"]] == ["embed", "dense_search", "generate"]
+    assert [s["name"] for s in trace["spans"]] == [
+        "guard_input", "embed", "dense_search", "generate", "guard_output",
+    ]  # fmt: skip
     assert trace["attributes"]["conversation_id"] == conversation_id
     assert trace["attributes"]["xray_trace_id"] == "Root=1-abc"
     assert trace["attributes"]["lambda_request_id"] == "req-1"
@@ -227,7 +229,7 @@ def test_follow_up_is_rewritten_and_listed(api: TestClient, chat: ChatService) -
     ).json()
     assert second["turn"]["turn_id"] == f"{conversation_id}.2"
     assert second["turn"]["result"]["standalone_question"] == "What was my master's GPA?"
-    assert second["turn"]["trace"]["spans"][0]["name"] == "rewrite"
+    assert second["turn"]["trace"]["spans"][1]["name"] == "rewrite"
 
     listed = api.get("/api/conversations").json()
     assert [c["conversation_id"] for c in listed] == [conversation_id]

@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from docqa.domain.agent_trace import agent_trace_stats
+from docqa.domain.judging import is_hallucination
 from docqa.domain.retrieval import RetrievedChunk, Strategy
 from docqa.evals.dataset import GoldenItem
 from docqa.evals.judge import Judge
@@ -25,6 +27,7 @@ class EvalRecord(BaseModel):
     answer: str | None = None
     answer_metrics: dict[str, float | None] = Field(default_factory=dict)
     judge: dict[str, float | None] = Field(default_factory=dict)
+    agent: dict[str, float] = Field(default_factory=dict)  # agent strategy: trajectory stats
     timings_ms: dict[str, float] = Field(default_factory=dict)
     cost_usd: float = 0.0
     error: str | None = None
@@ -85,6 +88,15 @@ def _evaluate(
             chunks, timings, cost = result.chunks, result.timings_ms, result.cost.usd
             record.answer = result.answer
             record.answer_metrics = answer_scores(item, result)
+            stats = agent_trace_stats(result.trace) if result.trace else None
+            if stats:
+                record.agent = {
+                    "steps": float(stats.steps),
+                    "efficiency": stats.efficiency,
+                    "grades": float(stats.grades),
+                    "grades_sufficient": float(stats.grades_sufficient),
+                    "first_search_failed": float(stats.first_search_failed),
+                }
         else:
             retrieval = qa.retrieve(item.question, strategy)
             chunks, timings, cost = retrieval.chunks, retrieval.timings_ms, retrieval.cost.usd
@@ -111,6 +123,7 @@ class StrategySummary(BaseModel):
     retrieval: dict[str, float | None]
     answers: dict[str, float | None]
     judge: dict[str, float | None]
+    agent: dict[str, float | None] = Field(default_factory=dict)
     latency_ms: dict[str, float | None]
     cost_usd: dict[str, float]
     by_category: dict[str, dict[str, float | None]]
@@ -139,6 +152,7 @@ def summarize(records: Sequence[EvalRecord]) -> list[StrategySummary]:
                 },
                 answers=_answer_summary(answerable, unanswerable),
                 judge=_judge_summary(answerable),
+                agent=_agent_summary(ok),
                 latency_ms={
                     "retrieval_p50": percentile(retrieval_times, 50),
                     "retrieval_p95": percentile(retrieval_times, 95),
@@ -171,6 +185,37 @@ def _answer_summary(
         "false_refusal_rate": _complement(metric(answerable, "refusal_correct")),
         "citation_hit": metric(answerable, "citation_hit"),
         "citation_precision": metric(answerable, "citation_precision"),
+        "hallucination_rate": _hallucination_rate(answerable, unanswerable),
+    }
+
+
+def _hallucination_rate(
+    answerable: Sequence[EvalRecord], unanswerable: Sequence[EvalRecord]
+) -> float | None:
+    """Of the questions it answered: answering an unanswerable one always counts; an
+    answerable one counts when the judge found an unsupported claim (judged runs only)."""
+    invented = [r for r in unanswerable if r.answer_metrics.get("refusal_correct") == 0.0]
+    answered = [r for r in answerable if r.answer_metrics.get("refusal_correct") == 1.0]
+    unsupported = [r for r in answered if is_hallucination(r.judge.get("faithfulness"))]
+    total = len(invented) + len(answered)
+    return (len(invented) + len(unsupported)) / total if total else None
+
+
+def _agent_summary(rows: Sequence[EvalRecord]) -> dict[str, float | None]:
+    traced = [r for r in rows if r.agent]
+    if not traced:
+        return {}
+    retried = [r for r in traced if r.agent["first_search_failed"]]
+    grades = sum(r.agent["grades"] for r in traced)
+    return {
+        "task_completion_rate": mean([r.answer_metrics.get("correct") for r in traced]),
+        "step_count": mean([r.agent["steps"] for r in traced]),
+        "trajectory_efficiency": mean([r.agent["efficiency"] for r in traced]),
+        "search_accuracy": sum(r.agent["grades_sufficient"] for r in traced) / grades
+        if grades
+        else None,
+        "error_recovery_rate": mean([r.answer_metrics.get("correct") for r in retried]),
+        "cost_per_task": mean([r.cost_usd for r in traced]),
     }
 
 

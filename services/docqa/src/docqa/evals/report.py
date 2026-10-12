@@ -55,6 +55,18 @@ def render_report(summaries: Sequence[StrategySummary], meta: dict[str, str]) ->
             [[s.strategy, *(_fmt(s.judge.get(k)) for k in judge_keys)] for s in summaries],
         )
 
+    agent_keys = list(dict.fromkeys(k for s in summaries for k in s.agent))
+    if agent_keys:
+        lines += ["", "## Agent", ""]
+        lines += _table(
+            ["strategy", *agent_keys],
+            [
+                [s.strategy, *(_fmt(s.agent.get(k)) for k in agent_keys)]
+                for s in summaries
+                if s.agent
+            ],
+        )
+
     lines += ["", "## Latency and cost", ""]
     lines += _table(
         [
