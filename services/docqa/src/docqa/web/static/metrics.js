@@ -679,6 +679,19 @@ window.DocqaMetrics = (() => {
       ),
     );
     body.append(by);
+
+    // By prompt version
+    if (m.by_prompt.length) {
+      const bp = section("By answer-prompt version", "Every answer records the ID of the prompt that produced it (name@version#hash, from services/docqa/src/docqa/prompts/). Compare versions here after a prompt change; judge more answers (make docqa-local-judge) to fill faithfulness and hallucination rate. The offline comparison is make docqa-local-eval PROMPTS=answer@1 against the default.");
+      bp.append(
+        table(
+          ["Answer prompt", "Questions", "Answer rate", "Not found", "Uncited", "Judged", "Faithfulness", "Hallucination", "CSAT"],
+          m.by_prompt.map((p) => [el("span", p.prompt, "mono"), fmt.num(p.questions), fmt.pct(p.answer_rate), fmt.pct(p.not_found_rate), fmt.pct(p.uncited_rate), fmt.num(p.judged), fmt.score(p.faithfulness), fmt.pct(p.hallucination_rate), fmt.pct(p.csat)]),
+          [1, 2, 3, 4, 5, 6, 7, 8],
+        ),
+      );
+      body.append(bp);
+    }
   }
 
   // ---------------------------------------------------------------- offline view

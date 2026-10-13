@@ -13,12 +13,11 @@ import boto3
 from botocore.config import Config
 
 from docqa.domain.extraction import (
-    METADATA_PROMPT,
-    TRANSCRIBE_PROMPT,
     clean_transcription,
     parse_metadata,
 )
 from docqa.domain.models import DocMetadata
+from docqa.domain.prompts import prompt
 from docqa.domain.retrieval import RetrievedChunk, ranked
 from docqa.ports import Generation
 
@@ -50,7 +49,7 @@ class BedrockVisionTranscriber:
                     "role": "user",
                     "content": [
                         {"image": {"format": image_format, "source": {"bytes": image}}},
-                        {"text": TRANSCRIBE_PROMPT},
+                        {"text": prompt("transcribe").text},
                     ],
                 }
             ],
@@ -72,7 +71,7 @@ class BedrockMetadataExtractor:
                 {
                     "role": "user",
                     "content": [
-                        {"text": METADATA_PROMPT.format(text=text[: self._max_input_chars])}
+                        {"text": prompt("metadata").text.format(text=text[: self._max_input_chars])}
                     ],
                 }
             ],

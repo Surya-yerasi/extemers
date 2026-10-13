@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from docqa.domain.conversation import REWRITE_SYSTEM
+from docqa.domain import prompts
 from docqa.domain.documents import BlobInfo
 from docqa.domain.models import Chunk, DocMetadata, ParsedDocument
 from docqa.domain.retrieval import RetrievedChunk, ranked
@@ -146,7 +146,7 @@ class FakeGenerator:
     def generate(
         self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
     ) -> Generation:
-        if system == REWRITE_SYSTEM:
+        if system == prompts.prompt("rewrite").text:
             self.rewrite_prompts.append(prompt)
             return Generation(text=self.rewrite, input_tokens=200, output_tokens=12)
         self.prompts.append(prompt)

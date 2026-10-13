@@ -7,6 +7,8 @@ uv run python -m docqa.cli stats
 uv run python -m docqa.cli ask "What was my GPA?" --strategy hybrid_rerank
 uv run python -m docqa.cli eval --strategies dense,bm25 --retrieval-only
 uv run python -m docqa.cli judge-traffic --window 7d --limit 20   # LLM judge on live answers
+uv run python -m docqa.cli eval --prompts answer@1   # evaluate another prompt version
+uv run python -m docqa.cli prompts [--lock]          # list prompt versions; update the lock
 """
 
 import argparse
@@ -20,6 +22,15 @@ from docqa.adapters.lancedb_index import LanceDocumentCatalog
 from docqa.config import IngestSettings, QASettings
 from docqa.domain.documents import STATUS_PREFIX, IngestStatus
 from docqa.domain.judging import ONLINE_METRICS
+from docqa.domain.prompts import (
+    LOCK_FILE,
+    PROMPT_NAMES,
+    available,
+    load_prompt,
+    prompt_ids,
+    render_lock,
+    use_versions,
+)
 from docqa.domain.retrieval import Strategy
 from docqa.evals.dataset import load_golden
 from docqa.evals.judge import ALL_METRICS, Judge, RagasJudge
@@ -30,6 +41,8 @@ from docqa.pipelines.ingest import RAW_PREFIX, IngestService
 from docqa.pipelines.metrics import WINDOWS, since_for
 from docqa.pipelines.online_eval import judge_traffic
 from docqa.pipelines.wiring import build_blob_store, build_ingest_service, build_qa_service
+
+PROMPTS_FOR_EVAL = ("answer", "plan", "grade", "verify")  # the prompts an eval run exercises
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -53,6 +66,9 @@ def _parser() -> argparse.ArgumentParser:
     ev.add_argument("--judge-metrics", default=",".join(ALL_METRICS))
     ev.add_argument("--limit", type=int, help="first N questions only")
     ev.add_argument("--out", type=Path, help="default: .data/evals/<time>-<provider>/")
+    ev.add_argument("--prompts", default="", help="other prompt versions, e.g. answer@1,plan@2")
+    pr = sub.add_parser("prompts", help="list prompt versions (IDs recorded on traces)")
+    pr.add_argument("--lock", action="store_true", help="record every version in the lock file")
     jt = sub.add_parser("judge-traffic", help="LLM-judge recent live answers (sampled)")
     jt.add_argument("--window", choices=list(WINDOWS), default="7d")
     jt.add_argument("--limit", type=int, default=20, help="newest N unjudged answers")
@@ -63,6 +79,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "prompts":  # files only: no settings or AWS needed
+        return _prompts(lock=args.lock)
 
     settings = IngestSettings()
 
@@ -78,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(answer.model_dump(mode="json"), indent=2))
         return 0
 
+    return _ingest_commands(args, settings)
+
+
+def _ingest_commands(args: argparse.Namespace, settings: IngestSettings) -> int:
     service = build_ingest_service(settings)
 
     if args.command == "stats":
@@ -100,7 +122,20 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if failures else 0
 
 
+def _prompts(lock: bool) -> int:
+    for name in PROMPT_NAMES:
+        active = load_prompt(name)
+        versions = sorted(p.version for p in available() if p.name == name)
+        print(f"{active.id:24} versions {versions}  {active.description}")
+    if lock:
+        LOCK_FILE.write_text(render_lock(available()))
+        print(f"wrote {LOCK_FILE}")
+    return 0
+
+
 def _eval(args: argparse.Namespace, settings: IngestSettings) -> int:
+    if args.prompts:
+        use_versions(args.prompts)  # before any prompt is read
     qa_settings = QASettings()
     items = load_golden(args.dataset)[: args.limit]
     strategies = [Strategy(s.strip()) for s in args.strategies.split(",") if s.strip()]
@@ -141,6 +176,7 @@ def _eval(args: argparse.Namespace, settings: IngestSettings) -> int:
         "agent": f"max_retrievals={qa_settings.agent_max_retrievals}, "
         f"verify={qa_settings.agent_verify}",
         "judge": judge.model_id if judge else "none",
+        "prompts": ", ".join(prompt_ids(PROMPTS_FOR_EVAL).values()),
     }
     report = render_report(summaries, meta)
 

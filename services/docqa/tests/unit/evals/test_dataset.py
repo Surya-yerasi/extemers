@@ -17,10 +17,11 @@ def test_golden_set_loads_with_every_category() -> None:
     items = load_golden(GOLDEN)
     assert len(items) >= 40
     assert {i.category for i in items} == {
-        "fact", "table", "paraphrase", "multi_doc", "unanswerable"
+        "fact", "table", "paraphrase", "multi_doc", "unanswerable", "general_knowledge"
     }  # fmt: skip
     for i in items:
-        assert i.answerable == (i.category != "unanswerable"), i.id
+        # general_knowledge: questions any model could answer, but the documents do not
+        assert i.answerable == (i.category not in {"unanswerable", "general_knowledge"}), i.id
         assert i.must_contain or not i.answerable, i.id
 
 

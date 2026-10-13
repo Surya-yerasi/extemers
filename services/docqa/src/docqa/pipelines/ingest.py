@@ -34,6 +34,7 @@ from docqa.domain.models import (
     content_hash,
     doc_id_for,
 )
+from docqa.domain.prompts import prompt_ids
 from docqa.ports import BlobStore, ChunkIndex, Embedder, MetadataExtractor, VisionTranscriber
 
 logger = Logger(child=True)
@@ -196,10 +197,12 @@ class IngestService:
             tracker.stage(IngestStage.METADATA)
             full_text = "\n\n".join(p.markdown for p in doc.pages)
             doc.metadata = self._metadata.extract(full_text)
+            doc.prompts = prompt_ids(("transcribe", "metadata"))
             self._blobs.put(
                 parsed_key(doc_id), doc.model_dump_json(indent=2).encode(), "application/json"
             )
 
+        tracker.status.prompts = doc.prompts  # a reused parse keeps the prompts it was made with
         tracker.stage(IngestStage.CHUNK)
         chunks = chunk_document(doc, self._chunking)
         tracker.stage(IngestStage.EMBED, done=0, total=len(chunks))

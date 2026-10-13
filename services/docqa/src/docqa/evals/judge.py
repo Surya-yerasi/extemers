@@ -12,7 +12,8 @@ import asyncio
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from docqa.domain.judging import COHERENCE_SYSTEM, build_coherence_prompt, parse_coherence
+from docqa.domain.judging import build_coherence_prompt, parse_coherence
+from docqa.domain.prompts import prompt
 
 ALL_METRICS = (
     "faithfulness",  # are the answer's claims supported by the retrieved chunks?
@@ -115,7 +116,7 @@ class RagasJudge:
         response = await self._client.chat.completions.create(
             model=self.model_id,
             messages=[
-                {"role": "system", "content": COHERENCE_SYSTEM},
+                {"role": "system", "content": prompt("coherence").text},
                 {"role": "user", "content": build_coherence_prompt(question, answer)},
             ],
             temperature=0,

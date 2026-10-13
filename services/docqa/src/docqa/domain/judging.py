@@ -14,14 +14,7 @@ from docqa.domain.extraction import parse_json_object
 ONLINE_METRICS = ("faithfulness", "answer_relevancy", "context_precision", "coherence")
 HALLUCINATION_BELOW = 1.0  # any claim the context does not support makes it a hallucination
 
-COHERENCE_SYSTEM = """You grade the writing quality of an answer, not its correctness.
-Score coherence from 1 to 5:
-5 = clear, well organised, consistent, directly readable
-4 = clear with minor awkwardness
-3 = understandable but disorganised or repetitive
-2 = hard to follow, or parts contradict each other
-1 = incoherent
-Reply with JSON only: {"score": <1-5>, "reason": "<one short sentence>"}"""
+# The rubric is prompts/coherence.md (versioned).
 
 
 def build_coherence_prompt(question: str, answer: str) -> str:

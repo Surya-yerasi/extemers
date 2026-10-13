@@ -14,19 +14,18 @@ from pydantic import BaseModel, Field
 from docqa.domain.agent import AgentConfig
 from docqa.domain.answering import (
     NOT_FOUND_MESSAGE,
-    SYSTEM_PROMPT,
     Citation,
     build_user_prompt,
     parse_answer,
 )
 from docqa.domain.conversation import (
-    REWRITE_SYSTEM,
     Exchange,
     build_rewrite_prompt,
     parse_rewrite,
 )
 from docqa.domain.costs import CostEstimate, rerank_cost, token_cost
 from docqa.domain.guardrails import BLOCKED_MESSAGE, Finding, check_input, check_output
+from docqa.domain.prompts import prompt, prompt_ids
 from docqa.domain.retrieval import RetrievedChunk, Strategy, rrf_fuse
 from docqa.domain.tracing import Trace, Tracer
 from docqa.ports import ChunkSearcher, Embedder, Generator, Reranker
@@ -188,7 +187,7 @@ class QAService:
     ) -> AskResult:
         question = validate_question(question)
         tracer = tracer or Tracer(f"q_{secrets.token_hex(8)}")
-        tracer.set(strategy=strategy.value)
+        tracer.set(strategy=strategy.value, prompts=prompt_ids(_prompts_for(strategy, history)))
         tokens: dict[str, int] = {}
         cost = CostEstimate()
 
@@ -204,10 +203,15 @@ class QAService:
         standalone = question
         if history:  # a follow-up: make it searchable on its own
             with tracer.span(
-                "rewrite", model=self._generator.model_id, history_turns=len(history)
+                "rewrite",
+                model=self._generator.model_id,
+                prompt=prompt("rewrite").id,
+                history_turns=len(history),
             ) as span:
                 rewrite = self._generator.generate(
-                    REWRITE_SYSTEM, build_rewrite_prompt(history, question), REWRITE_MAX_TOKENS
+                    prompt("rewrite").text,
+                    build_rewrite_prompt(history, question),
+                    REWRITE_MAX_TOKENS,
                 )
                 standalone = parse_rewrite(rewrite.text, question, MAX_QUESTION_CHARS)
                 rewrite_cost = token_cost(
@@ -245,10 +249,13 @@ class QAService:
 
         if retrieval.chunks:
             with tracer.span(
-                "generate", model=self._generator.model_id, sources=len(retrieval.chunks)
+                "generate",
+                model=self._generator.model_id,
+                prompt=prompt("answer").id,
+                sources=len(retrieval.chunks),
             ) as span:
                 generation = self._generator.generate(
-                    SYSTEM_PROMPT,
+                    prompt("answer").text,
                     build_user_prompt(standalone, retrieval.chunks),
                     self._max_answer_tokens,
                 )
@@ -324,6 +331,16 @@ class QAService:
             blocked=blocked,
             guardrails=findings,
         )
+
+
+def _prompts_for(strategy: Strategy, history: Sequence[Exchange]) -> tuple[str, ...]:
+    """The prompts a question can use, recorded on its trace (IDs: name@version#hash)."""
+    names = ["rewrite"] if history else []
+    if strategy == Strategy.AGENT:
+        names += ["plan", "grade", "answer", "verify"]
+    else:
+        names.append("answer")
+    return tuple(names)
 
 
 def validate_question(question: str) -> str:

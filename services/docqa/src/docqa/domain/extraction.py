@@ -1,4 +1,4 @@
-"""Prompts and output parsing for document extraction, shared by every model provider.
+"""Output parsing for document extraction, shared by every model provider.
 Pure: no AWS or HTTP imports."""
 
 import json
@@ -7,18 +7,7 @@ from typing import Any
 
 from docqa.domain.models import DocMetadata
 
-TRANSCRIBE_PROMPT = (
-    "Transcribe this document page to Markdown. Reproduce all text exactly, in reading order. "
-    "Render tables as Markdown tables with a header row. Use '#' headings for titles. "
-    "Do not add commentary, summaries or text that is not on the page."
-)
-
-METADATA_PROMPT = """Read the start of this document and return ONLY a JSON object with keys:
-doc_type (one of: transcript, degree_certificate, certificate, letter, id_document, other),
-title, institution, person, date. Use "" when unknown. No other text.
-
-Document:
-{text}"""
+# The prompts are prompts/transcribe.md and prompts/metadata.md (versioned).
 
 
 _FENCE = re.compile(r"^```[\w-]*\n(.*?)\n?```$", re.DOTALL)

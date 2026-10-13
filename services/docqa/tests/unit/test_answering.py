@@ -3,20 +3,22 @@ import pytest
 from docqa.domain.answering import (
     NOT_FOUND,
     NOT_FOUND_MESSAGE,
-    SYSTEM_PROMPT,
     build_user_prompt,
     parse_answer,
     source_label,
 )
 from docqa.domain.costs import CostEstimate, rerank_cost, token_cost
+from docqa.domain.prompts import prompt
 from tests.fakes import retrieved
 
 CHUNKS = [retrieved("c1", "GPA 3.86", doc_id="t"), retrieved("c2", "BSc conferred", doc_id="d")]
 
 
 def test_system_prompt_demands_citations_and_not_found() -> None:
-    assert NOT_FOUND in SYSTEM_PROMPT
-    assert "[1]" in SYSTEM_PROMPT
+    text = prompt("answer").text
+    assert NOT_FOUND in text
+    assert "[1]" in text
+    assert "general knowledge" in text  # answer@2: no answers from the model's own knowledge
 
 
 def test_source_label_uses_title_or_file_name_and_pages() -> None:

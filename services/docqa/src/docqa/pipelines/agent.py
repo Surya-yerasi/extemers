@@ -16,9 +16,6 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from docqa.domain.agent import (
-    GRADE_SYSTEM,
-    PLAN_SYSTEM,
-    VERIFY_SYSTEM,
     AgentConfig,
     build_grade_prompt,
     build_plan_prompt,
@@ -28,8 +25,9 @@ from docqa.domain.agent import (
     parse_plan,
     parse_verify,
 )
-from docqa.domain.answering import SYSTEM_PROMPT, ParsedAnswer, build_user_prompt, parse_answer
+from docqa.domain.answering import ParsedAnswer, build_user_prompt, parse_answer
 from docqa.domain.costs import CostEstimate, token_cost
+from docqa.domain.prompts import prompt
 from docqa.domain.retrieval import RetrievedChunk, Strategy, ranked, rrf_fuse
 from docqa.domain.tracing import Tracer
 from docqa.ports import Generator
@@ -130,12 +128,12 @@ class AgentRunner:
         )
         return graph.compile()
 
-    def _call(self, run: _Run, step: str, system: str, prompt: str) -> str:
+    def _call(self, run: _Run, step: str, prompt_name: str, user_prompt: str) -> str:
         """One model call, with its tokens and cost added to the run. Decisions are JSON."""
         answer_step = step == "generate"
         generation = self._generator.generate(
-            system,
-            prompt,
+            prompt(prompt_name).text,
+            user_prompt,
             ANSWER_MAX_TOKENS if answer_step else DECISION_MAX_TOKENS,
             json_mode=not answer_step,
         )
@@ -151,8 +149,10 @@ class AgentRunner:
 
     def _plan(self, state: AgentState) -> AgentState:
         run, question = state["run"], state["question"]
-        with run.tracer.span("plan", model=self._generator.model_id) as span:
-            raw = self._call(run, "plan", PLAN_SYSTEM, build_plan_prompt(question))
+        with run.tracer.span(
+            "plan", model=self._generator.model_id, prompt=prompt("plan").id
+        ) as span:
+            raw = self._call(run, "plan", "plan", build_plan_prompt(question))
             queries = parse_plan(raw, question)
             span.set(queries=queries)
         return {"queries": queries}
@@ -182,11 +182,11 @@ class AgentRunner:
 
     def _grade(self, state: AgentState) -> AgentState:
         run, chunks = state["run"], state["chunks"]
-        with run.tracer.span("grade", model=self._generator.model_id) as span:
+        with run.tracer.span(
+            "grade", model=self._generator.model_id, prompt=prompt("grade").id
+        ) as span:
             # Asked even when nothing was found: that is when a reworded search helps most.
-            raw = self._call(
-                run, "grade", GRADE_SYSTEM, build_grade_prompt(state["question"], chunks)
-            )
+            raw = self._call(run, "grade", "grade", build_grade_prompt(state["question"], chunks))
             grade = parse_grade(raw)
             if not chunks:  # nothing to answer from, whatever the model says
                 grade = grade.model_copy(update={"sufficient": False})
@@ -205,17 +205,21 @@ class AgentRunner:
         run, question, chunks = state["run"], state["question"], state["chunks"]
         retry = "unsupported" in state
         with run.tracer.span(
-            "generate", model=self._generator.model_id, sources=len(chunks), retry=retry
+            "generate",
+            model=self._generator.model_id,
+            prompt=prompt("answer").id,
+            sources=len(chunks),
+            retry=retry,
         ) as span:
             if not chunks:
                 answer = parse_answer("", chunks)  # nothing found: "not found", no model call
             else:
-                prompt = (
+                user_prompt = (
                     build_retry_prompt(question, chunks, state["unsupported"])
                     if retry
                     else build_user_prompt(question, chunks)
                 )
-                answer = parse_answer(self._call(run, "generate", SYSTEM_PROMPT, prompt), chunks)
+                answer = parse_answer(self._call(run, "generate", "answer", user_prompt), chunks)
             span.set(not_found=answer.not_found, citations=[c.number for c in answer.citations])
         return {"answer": answer, "regenerations": state["regenerations"] + int(retry)}
 
@@ -225,11 +229,13 @@ class AgentRunner:
 
     def _verify(self, state: AgentState) -> AgentState:
         run = state["run"]
-        with run.tracer.span("verify", model=self._generator.model_id) as span:
+        with run.tracer.span(
+            "verify", model=self._generator.model_id, prompt=prompt("verify").id
+        ) as span:
             raw = self._call(
                 run,
                 "verify",
-                VERIFY_SYSTEM,
+                "verify",
                 build_verify_prompt(state["question"], state["chunks"], state["answer"].text),
             )
             verification = parse_verify(raw)

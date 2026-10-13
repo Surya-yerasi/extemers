@@ -35,6 +35,7 @@ class ParsedDocument(BaseModel):
     content_hash: str
     pages: list[Page]
     metadata: DocMetadata = Field(default_factory=DocMetadata)
+    prompts: dict[str, str] = Field(default_factory=dict)  # prompt IDs used to parse it
 
 
 class Chunk(BaseModel):
