@@ -628,3 +628,52 @@ definitions are in [07-ai-metrics.md](07-ai-metrics.md) §10-13.
 | D-63 | **Rule-based guardrails first, recorded like any other step** | Free, deterministic, explainable, testable; findings and metrics keep the same shape when a model-based layer (Bedrock Guardrails) is added | No guardrails (the violation metric would be meaningless); a classifier model first |
 | D-64 | **Merge duplicates, redefine what does not fit** | Response relevance = answer relevance; one hallucination rate; "tool call accuracy" becomes search accuracy because the agent has one tool; 👍/👎 is a two-point CSAT | Separate metrics with identical computations |
 | D-65 | **Starting targets in the glossary, shown on the scorecard** | "Where do we stand" needs a bar; one place to change it | Hard-coded thresholds in the page; no targets |
+
+## Phase 7d: versioned prompts
+
+Every prompt is a file in `services/docqa/src/docqa/prompts/`, versioned in its header and
+tracked by git:
+
+```
+prompts/answer.md       active version (answer@2)
+prompts/answer.v1.md    the previous version, kept for comparison evals
+prompts/rewrite.md  plan.md  grade.md  verify.md  transcribe.md  metadata.md  coherence.md
+prompts/prompts.lock.json   SHA-256 of every committed version
+```
+
+Each prompt has an ID, `name@version#hash` (e.g. `answer@2#01280c`), recorded:
+- on every trace: the trace's `prompts` attribute, and `prompt` on each model-call span;
+- on every parsed document and ingest status record (transcribe and metadata prompts);
+- in every eval run's `meta.json`, shown in Offline evaluation;
+- in Live traffic's **By answer-prompt version** table, for before/after comparisons.
+
+| Task | Command |
+|---|---|
+| List prompts and versions | `make docqa-prompts` |
+| Change a prompt | Copy `<name>.md` to `<name>.vN.md` (N = current version), edit `<name>.md`, bump `version`, add a changelog line, then `make docqa-prompts LOCK=1` |
+| Evaluate another version | `make docqa-local-eval PROMPTS=answer@1` (any `name@version`, comma-separated) |
+
+`tests/unit/test_prompts.py` fails if a committed version's text changes (edit without a
+version bump) or a new version is not in the lock file.
+
+### Phase 7d decisions
+
+| # | Decision | Why | Rejected |
+|---|---|---|---|
+| D-66 | **Prompts as files in the repo, IDs on every trace and eval run** | Free, reviewed in PRs, history in git, shipped inside the image; any number on the dashboard maps to exact prompt text | A database or S3 store (edits without review; only worth it when non-engineers edit prompts); a hosted registry such as Langfuse or MLflow (another server for one user) |
+| D-67 | **Name, version and content hash in the ID; a lock file in CI** | The hash catches an edit that forgot the version bump; the test turns that into a failing build | Version numbers alone (silently wrong after an unversioned edit) |
+| D-68 | **Older versions kept as `<name>.vN.md`, selectable with `PROMPTS=`** | A prompt change is an experiment: compare old and new on the same golden set before promoting | Comparing against an old git checkout (slow, error-prone) |
+| D-69 | **answer@2: no general knowledge; stray NOT_FOUND markers handled** | Live judging found "What is GPA?" answered from the model's own knowledge with citations to transcripts that do not define GPA. The prompt forbids it; the parser turns an uncited answer carrying a NOT_FOUND marker into "not found". Four `general_knowledge` golden questions now measure it | Filtering such questions with a classifier (more moving parts than the cause) |
+
+**answer@1 vs answer@2** (golden set, 53 questions, hybrid, local qwen2.5:7b, 2026-10-13):
+
+| | answer@1 | answer@2 first draft (`#0cc334`, rejected) | **answer@2 (`#01280c`)** |
+|---|---|---|---|
+| Correct (all) | 0.925 | 0.755 | **0.943** |
+| Correct (answerable) | 0.930 | 0.698 | **0.930** |
+| Refusal accuracy | 0.900 | 1.000 | **1.000** |
+| General-knowledge questions refused | 3 of 4 | 4 of 4 | **4 of 4** |
+
+The first draft also reworded the citation rule; the 7B model then answered 10 fact questions
+with a bare "[1]". The comparison eval caught it before it shipped: the reason prompt
+changes go through `PROMPTS=` evals first.

@@ -16,22 +16,7 @@ from docqa.domain.retrieval import RetrievedChunk
 MAX_PLANNED_QUERIES = 3
 MAX_QUERY_CHARS = 200
 
-PLAN_SYSTEM = """You plan searches over one person's documents: transcripts, diplomas,
-certificates, letters, employment records.
-Write 1 to 3 short search queries that together find every fact the question needs.
-- One fact needed: one query.
-- Several facts (comparing two documents, a difference, a list): one query per fact.
-Prefer words that would appear in the document itself ("paid time off", not "vacation").
-Return only JSON: {"queries": ["...", "..."]}"""
-
-GRADE_SYSTEM = """You check whether search results are enough to answer a question about
-one person's documents. Set "sufficient" to true only if the numbered sources state every
-fact the question needs. If a fact is missing, name it and write one better search query for it.
-Return only JSON: {"sufficient": true or false, "missing": "...", "query": "..."}"""
-
-VERIFY_SYSTEM = """You check an answer against its numbered sources. A claim is supported
-only if a source states it (simple arithmetic on stated numbers is fine).
-Return only JSON: {"supported": true or false, "unsupported": "first unsupported claim or empty"}"""
+# The system prompts are prompts/plan.md, grade.md and verify.md (versioned).
 
 
 class AgentConfig(BaseModel):

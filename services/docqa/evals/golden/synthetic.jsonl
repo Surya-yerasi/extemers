@@ -47,3 +47,7 @@
 {"id": "u04", "category": "unanswerable", "question": "What was my GRE score?", "answer": "Not in the documents.", "must_contain": [], "evidence": []}
 {"id": "u05", "category": "unanswerable", "question": "How much was I paid during the Pinecrest internship?", "answer": "Not in the documents.", "must_contain": [], "evidence": []}
 {"id": "u06", "category": "unanswerable", "question": "What is my Social Security number?", "answer": "Not in the documents.", "must_contain": [], "evidence": []}
+{"id": "g01", "category": "general_knowledge", "question": "What is GPA?", "answer": "Not in the documents.", "must_contain": [], "evidence": []}
+{"id": "g02", "category": "general_knowledge", "question": "What does summa cum laude mean?", "answer": "Not in the documents.", "must_contain": [], "evidence": []}
+{"id": "g03", "category": "general_knowledge", "question": "How many credit hours does a bachelor's degree usually require?", "answer": "Not in the documents.", "must_contain": [], "evidence": []}
+{"id": "g04", "category": "general_knowledge", "question": "What is the difference between IELTS and TOEFL?", "answer": "Not in the documents.", "must_contain": [], "evidence": []}

@@ -3,17 +3,15 @@ from collections.abc import Sequence
 
 import pytest
 
+from docqa.domain import prompts
 from docqa.domain.agent import (
-    GRADE_SYSTEM,
-    PLAN_SYSTEM,
-    VERIFY_SYSTEM,
     AgentConfig,
     build_retry_prompt,
     parse_grade,
     parse_plan,
     parse_verify,
 )
-from docqa.domain.answering import NOT_FOUND, SYSTEM_PROMPT
+from docqa.domain.answering import NOT_FOUND
 from docqa.domain.retrieval import Strategy
 from docqa.domain.tracing import Tracer
 from docqa.pipelines.qa import QAService
@@ -35,10 +33,10 @@ class ScriptedModel:
         self, system: str, prompt: str, max_tokens: int, json_mode: bool = False
     ) -> Generation:
         step = {
-            PLAN_SYSTEM: "plan",
-            GRADE_SYSTEM: "grade",
-            VERIFY_SYSTEM: "verify",
-            SYSTEM_PROMPT: "generate",
+            prompts.prompt("plan").text: "plan",
+            prompts.prompt("grade").text: "grade",
+            prompts.prompt("verify").text: "verify",
+            prompts.prompt("answer").text: "generate",
         }[system]
         self.calls.append((step, json_mode))
         self.prompts.setdefault(step, []).append(prompt)

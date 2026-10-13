@@ -9,7 +9,7 @@ DOCQA := services/docqa
         docqa-install docqa-check docqa-build docqa-run docqa-dev \
         docqa-samples docqa-upload-samples docqa-ingest docqa-stats docqa-ask \
         docqa-local-models docqa-local-samples docqa-local-ingest docqa-local-prune docqa-local-stats \
-        docqa-local-ask docqa-local-dev docqa-local-eval docqa-local-judge docqa-eval \
+        docqa-local-ask docqa-local-dev docqa-local-eval docqa-local-judge docqa-prompts docqa-eval \
         audit-tags nuke-orphans docs-diagrams clean
 
 help: ## Show targets
@@ -109,16 +109,19 @@ docqa-local-dev: ## Local mode: the web app on :8080 (real Cognito login, local 
 	cd $(DOCQA) && $(LOCAL) DOCQA_CONFIG_PARAMETER=/docqa/dev/config AWS_REGION=us-east-1 \
 	  uv run uvicorn docqa.web.app:create_app --factory --reload --reload-dir src --port 8080
 
-# Eval options: STRATEGIES=dense,bm25  LIMIT=10  RETRIEVAL_ONLY=1  JUDGE=local
+# Eval options: STRATEGIES=dense,bm25  LIMIT=10  RETRIEVAL_ONLY=1  JUDGE=local  PROMPTS=answer@1
 EVAL_ARGS = $(if $(STRATEGIES),--strategies $(STRATEGIES)) $(if $(LIMIT),--limit $(LIMIT)) \
             $(if $(RETRIEVAL_ONLY),--retrieval-only) $(if $(JUDGE),--judge $(JUDGE)) \
-            $(if $(DATASET),--dataset $(DATASET))
+            $(if $(DATASET),--dataset $(DATASET)) $(if $(PROMPTS),--prompts $(PROMPTS))
 
 # Local default skips hybrid_rerank: with no local reranker it repeats hybrid's prompts, and
 # Ollama's prompt cache would make it look faster than it is.
 docqa-local-eval: ## Local mode: golden set through the strategies; report under .data/evals/
 	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli eval \
 	  $(EVAL_ARGS) $(if $(STRATEGIES),,--strategies dense,bm25,hybrid)
+
+docqa-prompts: ## List prompt versions; LOCK=1 records new versions in prompts.lock.json
+	cd $(DOCQA) && uv run python -m docqa.cli prompts $(if $(LOCK),--lock)
 
 docqa-local-judge: ## Local mode: LLM-judge recent live answers [WINDOW=7d LIMIT=20 RESCORE=1]
 	cd $(DOCQA) && $(LOCAL) uv run python -m docqa.cli judge-traffic \

@@ -18,7 +18,7 @@ class Evidence(BaseModel):
 
 class GoldenItem(BaseModel):
     id: str
-    category: str  # fact, table, paraphrase, multi_doc, unanswerable
+    category: str  # fact, table, paraphrase, multi_doc, unanswerable, general_knowledge
     question: str
     answer: str  # reference answer (for the LLM judge)
     # Each entry must appear in the answer; a list entry means "any one of these".

@@ -15,12 +15,7 @@ TITLE_CHARS = 80
 _CONVERSATION_ID = re.compile(r"^c_[0-9a-f]{16}$")
 _TURN_ID = re.compile(r"^(c_[0-9a-f]{16})\.([1-9][0-9]{0,3})$")
 
-REWRITE_SYSTEM = """You rewrite follow-up questions about the user's personal documents.
-Given the conversation so far and a follow-up question, return the follow-up as one
-standalone question that can be understood without the conversation.
-Resolve words like "it", "that", "there" and "my master's one" using the conversation.
-If the follow-up is already standalone, return it unchanged.
-Return only the question: no answer, no explanation, no quotes."""
+# The rewrite system prompt is prompts/rewrite.md (versioned).
 
 
 class Exchange(BaseModel):

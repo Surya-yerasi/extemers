@@ -256,3 +256,16 @@ answers, treat the averages as direction, not measurement.
 model's general knowledge ("Grade Point Average is…") while citing three transcripts that do not
 define it. The judge scored context precision 0 and faithfulness 0.67: a hallucination with
 real-looking citations, invisible to every deterministic metric.
+
+## 14. Versioning prompts
+
+A prompt change can move every metric above, so treat each change as an experiment:
+
+1. Every prompt has an ID (`answer@2#01280c`), recorded on every trace and eval run.
+2. Before promoting a new version, compare it with the old one on the same golden set:
+   `make docqa-local-eval PROMPTS=answer@1` against `make docqa-local-eval`.
+3. After promoting it, watch **By answer-prompt version** in Live traffic, and judge a sample
+   of the new answers (`make docqa-local-judge`).
+
+The hash in the ID matters: an edit that forgets the version bump still gets a new ID, and
+the test suite fails on it, so two different texts can never share a version.

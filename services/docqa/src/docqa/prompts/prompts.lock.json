@@ -1,0 +1,27 @@
+{
+  "answer": {
+    "1": "e3ddfbec4c7379083da43f1f4ed18f85dae3e044145df6334dfb71a3d51e8025",
+    "2": "01280c339a50dfdf9df81358c4e91591f9496e9ff253d7ede93654dec0eef67d"
+  },
+  "coherence": {
+    "1": "48f700d717c2cb25229b4ab8c7fa90ded56fa5a119134d39d7395804efe65c0f"
+  },
+  "grade": {
+    "1": "eb9dbb136321388785cddc81e8aec3d32f11d30adcab9d9925fda0a6907d0145"
+  },
+  "metadata": {
+    "1": "f6aa8b6353ed8161b9d54b20dfaed689f667a13bf75f9be04ff82e62488dcf38"
+  },
+  "plan": {
+    "1": "1c37767854a180fa6cb71c4e2391f909a7a30c4ad1d7eaa969042cf4f03fd019"
+  },
+  "rewrite": {
+    "1": "bb999f24cdf394b1f2a6898efdbdfa963f19a8f28c7de7c1a93e0f23f78d9a58"
+  },
+  "transcribe": {
+    "1": "e352a7be2fb56324cfd90a49c9d23e221c7d669d6a68f2995a00cb81d2b079d2"
+  },
+  "verify": {
+    "1": "d74c94cd0e3e146dba41d9995f772ffc16f1717dd6892ad57f0877c0d4a48002"
+  }
+}

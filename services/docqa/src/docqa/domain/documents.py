@@ -71,6 +71,7 @@ class IngestStatus(BaseModel):
     chunks: int | None = None
     reused_parse: bool | None = None
     index_table: str = ""
+    prompts: dict[str, str] = Field(default_factory=dict)  # transcribe/metadata prompt IDs
     error: str | None = None
 
 

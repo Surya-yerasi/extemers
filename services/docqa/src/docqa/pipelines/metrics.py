@@ -26,6 +26,9 @@ WINDOWS: dict[str, timedelta | None] = {
     "all": None,
 }
 LLM_STEPS = ("rewrite", "plan", "grade", "generate", "verify")  # spans that call a chat model
+# Traces from before prompt versioning carry no IDs; the answer prompt then was answer@1 (its
+# text is byte-identical to prompts/answer.v1.md, checked when the files were created).
+UNTRACKED_ANSWER_PROMPT = "answer@1 (before tracking)"
 
 
 class Distribution(BaseModel):
@@ -84,6 +87,20 @@ class StrategyRow(BaseModel):
     helpful_rate: float | None
 
 
+class PromptRow(BaseModel):
+    """Outcomes per answer-prompt version: the before/after view for a prompt change."""
+
+    prompt: str
+    questions: int
+    answer_rate: float | None
+    not_found_rate: float | None
+    uncited_rate: float | None  # answers flagged by the uncited-answer guardrail
+    judged: int
+    faithfulness: float | None
+    hallucination_rate: float | None
+    csat: float | None
+
+
 class LiveMetrics(BaseModel):
     window: str
     strategy: str | None
@@ -102,6 +119,7 @@ class LiveMetrics(BaseModel):
     conversation: dict[str, float | None]
     safety: dict[str, float | None]
     guardrail_rules: dict[str, int]  # rule -> questions where it fired
+    by_prompt: list[PromptRow]
 
 
 def since_for(window: str, now: datetime) -> datetime | None:
@@ -234,6 +252,49 @@ def _safety_metrics(turns: Sequence[Turn]) -> tuple[dict[str, float | None], dic
         },
         dict(rules.most_common()),
     )
+
+
+def answer_prompt(turn: Turn) -> str:
+    prompts = turn.trace.attributes.get("prompts")
+    if isinstance(prompts, dict) and prompts.get("answer"):
+        return str(prompts["answer"])
+    return UNTRACKED_ANSWER_PROMPT
+
+
+def _prompt_rows(turns: Sequence[Turn]) -> list[PromptRow]:
+    groups: dict[str, list[Turn]] = defaultdict(list)
+    for t in turns:
+        if t.result and t.result.blocked:
+            continue  # never reached the answer prompt
+        groups[answer_prompt(t)].append(t)
+    rows = []
+    for name, ts in groups.items():
+        answered = [t for t in ts if _answered(t)]
+        judged = [t.judge for t in answered if t.judge]
+        flags = [is_hallucination(j.scores.get("faithfulness")) for j in judged]
+        scored = [f for f in flags if f is not None]
+        rated = [t for t in ts if t.feedback]
+        rows.append(
+            PromptRow(
+                prompt=name,
+                questions=len(ts),
+                answer_rate=rate(len(answered), len(ts)),
+                not_found_rate=rate(sum(1 for t in ts if t.result and t.result.not_found), len(ts)),
+                uncited_rate=rate(
+                    sum(
+                        1
+                        for t in answered
+                        if t.result and any(f.rule == "uncited_answer" for f in t.result.guardrails)
+                    ),
+                    len(answered),
+                ),
+                judged=len(judged),
+                faithfulness=mean([j.scores.get("faithfulness") for j in judged]),
+                hallucination_rate=rate(sum(scored), len(scored)),
+                csat=rate(sum(1 for t in rated if t.feedback == "up"), len(rated)),
+            )
+        )
+    return sorted(rows, key=lambda r: r.prompt)
 
 
 def _peak_per_minute(turns: Sequence[Turn]) -> float | None:
@@ -414,4 +475,5 @@ def compute_live_metrics(
         conversation=_conversation_metrics(selected),
         safety=safety,
         guardrail_rules=rules,
+        by_prompt=_prompt_rows(selected),
     )

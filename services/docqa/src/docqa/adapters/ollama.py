@@ -12,12 +12,11 @@ import httpx
 
 from docqa.domain.costs import LOCAL_MODEL_PREFIX as LOCAL_PREFIX
 from docqa.domain.extraction import (
-    METADATA_PROMPT,
-    TRANSCRIBE_PROMPT,
     clean_transcription,
     parse_metadata,
 )
 from docqa.domain.models import DocMetadata
+from docqa.domain.prompts import prompt
 from docqa.domain.retrieval import RetrievedChunk, ranked
 from docqa.ports import Generation, ModelUnavailableError
 
@@ -119,7 +118,7 @@ class OllamaVisionTranscriber:
     def transcribe(self, image: bytes, image_format: str) -> str:
         message = {
             "role": "user",
-            "content": TRANSCRIBE_PROMPT,
+            "content": prompt("transcribe").text,
             "images": [base64.b64encode(image).decode("ascii")],
         }
         return clean_transcription(
@@ -134,9 +133,9 @@ class OllamaMetadataExtractor:
         self._max_input_chars = max_input_chars
 
     def extract(self, text: str) -> DocMetadata:
-        prompt = METADATA_PROMPT.format(text=text[: self._max_input_chars])
+        request = prompt("metadata").text.format(text=text[: self._max_input_chars])
         response = self._client.chat(
-            self._model, [{"role": "user", "content": prompt}], 300, json_output=True
+            self._model, [{"role": "user", "content": request}], 300, json_output=True
         )
         return parse_metadata(_content(response))
 
